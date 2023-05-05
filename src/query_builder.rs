@@ -1,83 +1,120 @@
-// use std::any::Any;
+use std::{any::Any, fmt::Debug};
 
-// use crate::{
-//     index::Index,
-//     table::{Record, Table},
-// };
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
-// trait AnyIndex<T> {
-//     fn search(&self, value: Box<dyn Any>) -> Vec<Record<T>>;
-// }
+use crate::{
+    index::Index,
+    result::DbResult,
+    table::{Record, Table},
+};
 
-// impl<T: Clone, I: Ord + 'static> AnyIndex<T> for Index<T, I> {
-//     fn search(&self, value: Box<dyn Any>) -> Vec<Record<T>> {
-//         let i = *value.downcast::<I>().unwrap();
-//         self.query(&i)
-//     }
-// }
+trait AnyIndex<T>
+where
+    T: Serialize + Debug,
+    for<'de> T: Deserialize<'de>,
+{
+    fn search(&self, value: Box<dyn Any>) -> DbResult<Vec<Record<T>>>;
+}
 
-// pub enum QueryOperator {
-//     And,
-//     Or,
-// }
+impl<T, I> AnyIndex<T> for Index<T, I>
+where
+    T: Serialize + Debug + Clone,
+    for<'de> T: Deserialize<'de>,
+    I: AsRef<[u8]> + 'static,
+{
+    fn search(&self, value: Box<dyn Any>) -> DbResult<Vec<Record<T>>> {
+        let i = *value.downcast::<I>().unwrap();
+        self.select(&i)
+    }
+}
 
-// pub struct QueryBuilder<'qb, T: Clone> {
-//     table: &'qb Table<T>,
-//     search_conditions: Vec<(Box<&'qb dyn AnyIndex<T>>, Box<dyn Any>)>,
-// }
+pub enum QueryOperator {
+    And,
+    Or,
+}
 
-// impl<'qb, T: Clone> QueryBuilder<'qb, T> {
-//     pub fn new(table: &'qb Table<T>) -> Self {
-//         Self {
-//             table,
-//             search_conditions: Vec::new(),
-//         }
-//     }
+pub struct QueryBuilder<'qb, T>
+where
+    T: Serialize + Debug + Clone,
+    for<'de> T: Deserialize<'de>,
+{
+    table: &'qb mut Table<T>,
+    search_conditions: Vec<(Box<&'qb dyn AnyIndex<T>>, Box<dyn Any>)>,
+}
 
-//     pub fn by<I>(mut self, index: &'qb Index<T, I>, value: I) -> Self
-//     where
-//         I: Ord + 'static,
-//     {
-//         self.search_conditions
-//             .push((Box::new(index), Box::new(value)));
+impl<'qb, T> QueryBuilder<'qb, T>
+where
+    T: Serialize + Debug + Clone,
+    for<'de> T: Deserialize<'de>,
+{
+    pub fn new(table: &'qb mut Table<T>) -> Self {
+        Self {
+            table,
+            search_conditions: Vec::new(),
+        }
+    }
 
-//         self
-//     }
+    pub fn by<I: AsRef<[u8]>>(mut self, index: &'qb Index<T, I>, value: I) -> Self
+    where
+        I: Ord + 'static,
+    {
+        self.search_conditions
+            .push((Box::new(index), Box::new(value)));
 
-//     pub fn select(self, op: QueryOperator) -> Vec<Record<T>> {
-//         let result_list: Vec<Vec<Record<T>>> = self
-//             .search_conditions
-//             .into_iter()
-//             .map(|(index, value)| index.search(value))
-//             .collect();
+        self
+    }
 
-//         match op {
-//             QueryOperator::And => {
-//                 let mut intersection: Vec<Record<T>> = result_list[0].clone();
-//                 for other_result in result_list.into_iter().skip(1) {
-//                     intersection.retain(|record| {
-//                         other_result
-//                             .iter()
-//                             .any(|other_record| record.id == other_record.id)
-//                     });
-//                 }
-//                 intersection
-//             }
-//             QueryOperator::Or => {
-//                 let mut records: Vec<Record<T>> = result_list.into_iter().flatten().collect();
+    pub fn select(self, op: QueryOperator) -> DbResult<Vec<Record<T>>> {
+        Self::static_select(self.search_conditions, op)
+    }
 
-//                 let mut seen = Vec::new();
-//                 records.retain(|item| {
-//                     if seen.contains(&item.id) {
-//                         false
-//                     } else {
-//                         seen.push(item.id);
-//                         true
-//                     }
-//                 });
+    pub fn update(self, op: QueryOperator, value: T) -> DbResult<Vec<Record<T>>> {
+        let ids: Vec<Uuid> = Self::static_select(self.search_conditions, op)?
+            .iter()
+            .map(|record| record.id)
+            .collect();
 
-//                 records
-//             }
-//         }
-//     }
-// }
+        self.table.update(&ids, value)
+    }
+
+    /// Actual functionality for select. Used to prevent unnecessary move.
+    fn static_select(
+        search_conditions: Vec<(Box<&'qb dyn AnyIndex<T>>, Box<dyn Any>)>,
+        op: QueryOperator,
+    ) -> DbResult<Vec<Record<T>>> {
+        let result_list = search_conditions
+            .into_iter()
+            .map(|(index, value)| index.search(value))
+            .collect::<DbResult<Vec<Vec<Record<T>>>>>()?;
+
+        match op {
+            QueryOperator::And => {
+                let mut intersection: Vec<Record<T>> = result_list[0].clone();
+                for other_result in result_list.into_iter().skip(1) {
+                    intersection.retain(|record| {
+                        other_result
+                            .iter()
+                            .any(|other_record| record.id == other_record.id)
+                    });
+                }
+                Ok(intersection)
+            }
+            QueryOperator::Or => {
+                let mut records: Vec<Record<T>> = result_list.into_iter().flatten().collect();
+
+                let mut seen = Vec::new();
+                records.retain(|item| {
+                    if seen.contains(&item.id) {
+                        false
+                    } else {
+                        seen.push(item.id);
+                        true
+                    }
+                });
+
+                Ok(records)
+            }
+        }
+    }
+}

@@ -10,3 +10,4 @@ uuid = { version = "1.3.2", features = ["v4", "serde"] }
 sled = "0.34.7"
 bincode = "1.3.3"
 serde = { version = "1.0.160", features = ["derive"] }
+thiserror = "1.0.40"
