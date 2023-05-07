@@ -192,29 +192,6 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
         })
     }
 
-    pub fn update(&self, query: &I, value: T) -> DbResult<Vec<Record<T>>> {
-        self.commit_log()?;
-
-        let mut new_data = vec![];
-
-        if let Ok(Some(bytes)) = self.indexed_data.get(query) {
-            let uuids: Vec<Uuid> = deserialize(&bytes)?;
-            let new_value = serialize(&value)?;
-
-            for uuid in uuids {
-                self.table_data
-                    .insert(serialize(&uuid)?, new_value.clone())?;
-
-                new_data.push(Record {
-                    id: uuid,
-                    data: value.clone(),
-                })
-            }
-        }
-
-        Ok(new_data)
-    }
-
     /// Check if a record matches the built index key.
     pub fn exists(&self, record: &Record<T>) -> DbResult<bool> {
         let key = (self.key_func)(&record.data);

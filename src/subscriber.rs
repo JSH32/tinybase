@@ -5,13 +5,13 @@ use uuid::Uuid;
 use crate::{table::SenderMap, Record};
 
 #[derive(Clone)]
-pub enum Event<T> {
+pub(crate) enum Event<T> {
     Remove(Record<T>),
     Insert(Record<T>),
     Update { id: Uuid, old_data: T, new_data: T },
 }
 
-pub struct Subscriber<T> {
+pub(crate) struct Subscriber<T> {
     id: Uuid,
     pub rx: Receiver<Event<T>>,
     senders: SenderMap<Event<T>>,

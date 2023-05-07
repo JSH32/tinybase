@@ -44,7 +44,7 @@ impl<T: TableType> Deref for Table<T> {
 ///
 /// # Type Parameters
 ///
-/// * `T` - The type of the value to be stored in the table. Must implement [`Serialize`], [`Deserialize`], and [`Debug`].
+/// * `T` - The type of the value to be stored in the table.
 pub struct TableInner<T>
 where
     T: TableType + 'static,
