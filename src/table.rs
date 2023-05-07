@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::marker::PhantomData;
+use std::ops::Deref;
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, RwLock};
 
@@ -11,22 +11,31 @@ use sled::{Db, Tree};
 use uuid::Uuid;
 
 use crate::constraint::Constraint;
-use crate::index::{Index, IndexInner, IndexType, SharedIndex};
+use crate::index::{Index, IndexInner, IndexType};
+use crate::record::Record;
 use crate::result::DbResult;
 use crate::subscriber::{Event, Subscriber};
-
-/// A single record in a table.
-#[derive(Debug, Clone)]
-pub struct Record<T> {
-    /// Unique required ID of a record.
-    pub id: Uuid,
-    pub data: T,
-}
 
 pub(crate) type SenderMap<T> = Arc<RwLock<HashMap<Uuid, Sender<T>>>>;
 
 pub trait TableType: Serialize + DeserializeOwned + Clone + Debug {}
 impl<T: Serialize + DeserializeOwned + Debug + Clone> TableType for T {}
+
+pub struct Table<T: TableType + 'static>(pub(crate) Arc<TableInner<T>>);
+
+impl<T: TableType> Clone for Table<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<T: TableType> Deref for Table<T> {
+    type Target = Arc<TableInner<T>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 /// Represents a table in the database.
 ///
@@ -36,7 +45,7 @@ impl<T: Serialize + DeserializeOwned + Debug + Clone> TableType for T {}
 /// # Type Parameters
 ///
 /// * `T` - The type of the value to be stored in the table. Must implement [`Serialize`], [`Deserialize`], and [`Debug`].
-pub struct Table<T>
+pub struct TableInner<T>
 where
     T: TableType + 'static,
 {
@@ -45,10 +54,9 @@ where
     name: String,
     senders: SenderMap<Event<T>>,
     constraints: RwLock<Vec<Constraint<T>>>,
-    _table_type: PhantomData<T>,
 }
 
-impl<T> Table<T>
+impl<T> TableInner<T>
 where
     T: TableType,
 {
@@ -72,7 +80,6 @@ where
             engine: engine.clone(),
             root,
             name: name.to_owned(),
-            _table_type: PhantomData::default(),
             senders: Arc::new(RwLock::new(HashMap::new())),
             constraints: RwLock::new(Vec::new()),
         })
@@ -219,7 +226,7 @@ where
         let subscriber = Subscriber::new(sender_id, rx, self.senders.clone());
         self.senders.write().unwrap().insert(sender_id, tx);
 
-        Ok(SharedIndex(Arc::new(IndexInner::new(
+        Ok(Index(Arc::new(IndexInner::new(
             &format!("{}_idx_{}", self.name, name),
             &self.engine,
             &self.root,

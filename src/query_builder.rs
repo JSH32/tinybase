@@ -1,12 +1,12 @@
-use std::{any::Any, fmt::Debug};
+use std::any::Any;
 
-use serde::{de::DeserializeOwned, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    index::{AnyIndex, Index},
+    index::{AnyIndex, Index, IndexType},
     result::DbResult,
-    table::{Record, Table},
+    table::{Table, TableType},
+    Record,
 };
 
 pub enum QueryOperator {
@@ -14,31 +14,28 @@ pub enum QueryOperator {
     Or,
 }
 
-pub struct QueryBuilder<'qb, T>
+pub struct QueryBuilder<T>
 where
-    T: Serialize + DeserializeOwned + Debug + Clone + 'static,
+    T: TableType + 'static,
 {
-    table: &'qb Table<T>,
-    search_conditions: Vec<(Box<&'qb dyn AnyIndex<T>>, Box<dyn Any>)>,
+    table: Table<T>,
+    search_conditions: Vec<(Box<dyn AnyIndex<T>>, Box<dyn Any>)>,
 }
 
-impl<'qb, T> QueryBuilder<'qb, T>
+impl<T> QueryBuilder<T>
 where
-    T: Serialize + DeserializeOwned + Debug + Clone,
+    T: TableType,
 {
-    pub fn new(table: &'qb Table<T>) -> Self {
+    pub fn new(table: &Table<T>) -> Self {
         Self {
-            table,
+            table: table.clone(),
             search_conditions: Vec::new(),
         }
     }
 
-    pub fn by<I: AsRef<[u8]>>(mut self, index: &'qb Index<T, I>, value: I) -> Self
-    where
-        I: Ord + 'static,
-    {
+    pub fn by<I: IndexType + 'static>(mut self, index: &Index<T, I>, value: I) -> Self {
         self.search_conditions
-            .push((Box::new(index), Box::new(value)));
+            .push((Box::new(index.clone()), Box::new(value)));
 
         self
     }
@@ -58,7 +55,7 @@ where
 
     /// Actual functionality for select. Used to prevent unnecessary move.
     fn static_select(
-        search_conditions: Vec<(Box<&'qb dyn AnyIndex<T>>, Box<dyn Any>)>,
+        search_conditions: Vec<(Box<dyn AnyIndex<T>>, Box<dyn Any>)>,
         op: QueryOperator,
     ) -> DbResult<Vec<Record<T>>> {
         let result_list = search_conditions

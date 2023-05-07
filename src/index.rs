@@ -1,5 +1,5 @@
 use std::any::Any;
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
 use std::sync::Arc;
 use std::vec;
 
@@ -7,37 +7,29 @@ use bincode::{deserialize, serialize};
 use sled::{Db, IVec, Tree};
 use uuid::Uuid;
 
+use crate::record::Record;
+use crate::result::DbResult;
 use crate::subscriber::{self, Subscriber};
 use crate::table::TableType;
-use crate::{result::DbResult, table::Record};
 
 pub trait IndexType: AsRef<[u8]> {}
 impl<T: AsRef<[u8]>> IndexType for T {}
 
-/// Alias for [`SharedIndex`].
-pub type Index<T, I> = SharedIndex<T, I>;
+/// An index of a Table.
+///
+/// # Type Parameters
+///
+/// * `T` - The type of the value to be stored in the table.
+/// * `I` - The type of the index key.
+pub struct Index<T: TableType, I: IndexType>(pub(crate) Arc<IndexInner<T, I>>);
 
-/// Shared Index that can be copied, this is used externally.
-pub struct SharedIndex<T, I>(pub(crate) Arc<IndexInner<T, I>>)
-where
-    T: TableType,
-    I: IndexType;
-
-impl<T, I> Clone for SharedIndex<T, I>
-where
-    T: TableType,
-    I: IndexType,
-{
+impl<T: TableType, I: IndexType> Clone for Index<T, I> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
 
-impl<T, I> Deref for SharedIndex<T, I>
-where
-    T: TableType,
-    I: IndexType,
-{
+impl<T: TableType, I: IndexType> Deref for Index<T, I> {
     type Target = Arc<IndexInner<T, I>>;
 
     fn deref(&self) -> &Self::Target {
@@ -45,27 +37,7 @@ where
     }
 }
 
-impl<T, I> DerefMut for SharedIndex<T, I>
-where
-    T: TableType,
-    I: IndexType,
-{
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-/// An index of a Table.
-///
-/// # Type Parameters
-///
-/// * `T` - The type of the value to be stored in the table. Must implement `Serialize`, `Deserialize`, and `Debug`.
-/// * `I` - The type of the index key. Must implement `AsRef<[u8]>`.
-pub struct IndexInner<T, I>
-where
-    T: TableType,
-    I: IndexType,
-{
+pub struct IndexInner<T: TableType, I: IndexType> {
     table_data: Tree,
     /// Function which will be used to compute the key per insert.
     key_func: Box<dyn Fn(&T) -> I + Send + Sync>,
@@ -75,11 +47,7 @@ where
     subscriber: Subscriber<T>,
 }
 
-impl<T, I> IndexInner<T, I>
-where
-    T: TableType,
-    I: IndexType,
-{
+impl<T: TableType, I: IndexType> IndexInner<T, I> {
     pub(crate) fn new(
         idx_name: &str,
         engine: &Db,
@@ -93,7 +61,7 @@ where
             table_data: table_data.clone(),
             key_func: Box::new(key_func),
             indexed_data: engine.open_tree(idx_name)?,
-            subscriber: subscriber, // log
+            subscriber,
         };
 
         // Index is new, sync data

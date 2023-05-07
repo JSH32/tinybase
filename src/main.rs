@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sled::Config;
 
@@ -13,8 +15,12 @@ pub use query_builder::{QueryBuilder, QueryOperator};
 pub mod result;
 pub use result::DbResult;
 
+pub mod record;
+pub use record::Record;
+
 pub mod table;
-pub use table::{Record, Table};
+pub use table::Table;
+use table::TableInner;
 
 use crate::constraint::Constraint;
 
@@ -82,7 +88,7 @@ impl TinyDb {
     where
         T: Serialize + DeserializeOwned + Clone + core::fmt::Debug,
     {
-        Table::new(&self.engine, name)
+        Ok(Table(Arc::new(TableInner::new(&self.engine, name)?)))
     }
 }
 
