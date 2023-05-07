@@ -1,33 +1,13 @@
 use std::{any::Any, fmt::Debug};
 
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    index::Index,
+    index::{AnyIndex, Index},
     result::DbResult,
     table::{Record, Table},
 };
-
-trait AnyIndex<T>
-where
-    T: Serialize + Debug,
-    for<'de> T: Deserialize<'de>,
-{
-    fn search(&self, value: Box<dyn Any>) -> DbResult<Vec<Record<T>>>;
-}
-
-impl<T, I> AnyIndex<T> for Index<T, I>
-where
-    T: Serialize + Debug + Clone,
-    for<'de> T: Deserialize<'de>,
-    I: AsRef<[u8]> + 'static,
-{
-    fn search(&self, value: Box<dyn Any>) -> DbResult<Vec<Record<T>>> {
-        let i = *value.downcast::<I>().unwrap();
-        self.select(&i)
-    }
-}
 
 pub enum QueryOperator {
     And,
@@ -36,19 +16,17 @@ pub enum QueryOperator {
 
 pub struct QueryBuilder<'qb, T>
 where
-    T: Serialize + Debug + Clone,
-    for<'de> T: Deserialize<'de>,
+    T: Serialize + DeserializeOwned + Debug + Clone + 'static,
 {
-    table: &'qb mut Table<T>,
+    table: &'qb Table<T>,
     search_conditions: Vec<(Box<&'qb dyn AnyIndex<T>>, Box<dyn Any>)>,
 }
 
 impl<'qb, T> QueryBuilder<'qb, T>
 where
-    T: Serialize + Debug + Clone,
-    for<'de> T: Deserialize<'de>,
+    T: Serialize + DeserializeOwned + Debug + Clone,
 {
-    pub fn new(table: &'qb mut Table<T>) -> Self {
+    pub fn new(table: &'qb Table<T>) -> Self {
         Self {
             table,
             search_conditions: Vec::new(),

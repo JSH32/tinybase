@@ -1,12 +1,59 @@
-use std::{fmt::Debug, vec};
+use std::any::Any;
+use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
+use std::vec;
 
 use bincode::{deserialize, serialize};
-use serde::{Deserialize, Serialize};
 use sled::{Db, IVec, Tree};
 use uuid::Uuid;
 
 use crate::subscriber::{self, Subscriber};
+use crate::table::TableType;
 use crate::{result::DbResult, table::Record};
+
+pub trait IndexType: AsRef<[u8]> {}
+impl<T: AsRef<[u8]>> IndexType for T {}
+
+/// Alias for [`SharedIndex`].
+pub type Index<T, I> = SharedIndex<T, I>;
+
+/// Shared Index that can be copied, this is used externally.
+pub struct SharedIndex<T, I>(pub(crate) Arc<IndexInner<T, I>>)
+where
+    T: TableType,
+    I: IndexType;
+
+impl<T, I> Clone for SharedIndex<T, I>
+where
+    T: TableType,
+    I: IndexType,
+{
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<T, I> Deref for SharedIndex<T, I>
+where
+    T: TableType,
+    I: IndexType,
+{
+    type Target = Arc<IndexInner<T, I>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T, I> DerefMut for SharedIndex<T, I>
+where
+    T: TableType,
+    I: IndexType,
+{
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
 
 /// An index of a Table.
 ///
@@ -14,11 +61,10 @@ use crate::{result::DbResult, table::Record};
 ///
 /// * `T` - The type of the value to be stored in the table. Must implement `Serialize`, `Deserialize`, and `Debug`.
 /// * `I` - The type of the index key. Must implement `AsRef<[u8]>`.
-pub struct Index<T, I>
+pub struct IndexInner<T, I>
 where
-    T: Serialize + Debug,
-    for<'de> T: Deserialize<'de>,
-    I: AsRef<[u8]>,
+    T: TableType,
+    I: IndexType,
 {
     table_data: Tree,
     /// Function which will be used to compute the key per insert.
@@ -29,11 +75,10 @@ where
     subscriber: Subscriber<T>,
 }
 
-impl<T, I> Index<T, I>
+impl<T, I> IndexInner<T, I>
 where
-    T: Serialize + Debug + Clone,
-    for<'de> T: Deserialize<'de>,
-    I: AsRef<[u8]>,
+    T: TableType,
+    I: IndexType,
 {
     pub(crate) fn new(
         idx_name: &str,
@@ -59,7 +104,9 @@ where
         Ok(new_index)
     }
 
-    fn sync(&self) -> DbResult<()> {
+    /// Resync index to be up to date with table.
+    pub fn sync(&self) -> DbResult<()> {
+        self.indexed_data.clear()?;
         for key in self.table_data.iter().keys() {
             // This should always succeed
             if let Some(data) = self.table_data.get(&key.clone()?)? {
@@ -198,5 +245,43 @@ where
         }
 
         Ok(new_data)
+    }
+
+    /// Check if a record matches the built index key.
+    pub fn exists(&self, record: &Record<T>) -> DbResult<bool> {
+        let key = (self.key_func)(&record.data);
+        Ok(!self.select(&key)?.is_empty())
+    }
+
+    pub fn index_name(&self) -> String {
+        std::str::from_utf8(&self.indexed_data.name())
+            .unwrap()
+            .to_string()
+    }
+}
+
+/// Type which [`Index`] can be casted to which doesn't require the `I` type parameter.
+pub trait AnyIndex<T: TableType> {
+    fn record_exists(&self, record: &Record<T>) -> DbResult<bool>;
+    fn search(&self, value: Box<dyn Any>) -> DbResult<Vec<Record<T>>>;
+    fn idx_name(&self) -> String;
+}
+
+impl<T, I> AnyIndex<T> for Index<T, I>
+where
+    T: TableType,
+    I: IndexType + 'static,
+{
+    fn search(&self, value: Box<dyn Any>) -> DbResult<Vec<Record<T>>> {
+        let i = *value.downcast::<I>().unwrap();
+        self.select(&i)
+    }
+
+    fn idx_name(&self) -> String {
+        self.index_name()
+    }
+
+    fn record_exists(&self, record: &Record<T>) -> DbResult<bool> {
+        self.exists(record)
     }
 }

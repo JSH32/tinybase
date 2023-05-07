@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sled::Config;
 
 pub mod index;
@@ -16,6 +16,9 @@ pub use result::DbResult;
 pub mod table;
 pub use table::{Record, Table};
 
+use crate::constraint::Constraint;
+
+mod constraint;
 mod subscriber;
 
 /// A tiny structured database based on sled.
@@ -77,8 +80,7 @@ impl TinyDb {
     /// ```
     pub fn open_table<T>(&self, name: &str) -> DbResult<Table<T>>
     where
-        T: Serialize + Clone + core::fmt::Debug,
-        for<'de> T: Deserialize<'de>,
+        T: Serialize + DeserializeOwned + Clone + core::fmt::Debug,
     {
         Table::new(&self.engine, name)
     }
@@ -92,9 +94,7 @@ struct Person {
 
 fn main() {
     let db: TinyDb = TinyDb::new(Some("./people"), true);
-    let mut person_table: Table<Person> = db.open_table("people").unwrap();
-
-    init_example_data(&mut person_table);
+    let person_table: Table<Person> = db.open_table("people").unwrap();
 
     let name_idx = person_table
         .create_index("name", |record| record.name.to_owned())
@@ -104,9 +104,19 @@ fn main() {
         .create_index("last_name", |record| record.last_name.to_owned())
         .unwrap();
 
+    person_table
+        .constraint(Constraint::unique(&name_idx))
+        .unwrap();
+
+    person_table
+        .constraint(Constraint::Check(|person| !person.name.contains(".")))
+        .unwrap();
+
+    init_example_data(&person_table);
+
     println!(
         "{:#?}",
-        QueryBuilder::new(&mut person_table)
+        QueryBuilder::new(&person_table)
             .by(&name_idx, "Name".to_string())
             .by(&lastname_idx, "Else".to_string())
             .update(
@@ -119,10 +129,10 @@ fn main() {
             .unwrap()
     );
 
-    println!("{:#?}", name_idx.select(&"Someone".to_string()).unwrap())
+    println!("{:#?}", name_idx.select(&"Name".to_string()).unwrap())
 }
 
-fn init_example_data(person_table: &mut Table<Person>) {
+fn init_example_data(person_table: &Table<Person>) {
     person_table
         .insert(Person {
             name: "Name".to_string(),

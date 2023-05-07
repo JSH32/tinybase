@@ -5,13 +5,16 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, RwLock};
 
 use bincode::{deserialize, serialize};
-use serde::{Deserialize, Serialize};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use sled::{Db, Tree};
 use uuid::Uuid;
 
-use crate::index::Index;
+use crate::constraint::Constraint;
+use crate::index::{Index, IndexInner, IndexType, SharedIndex};
 use crate::result::DbResult;
 use crate::subscriber::{Event, Subscriber};
+
 /// A single record in a table.
 #[derive(Debug, Clone)]
 pub struct Record<T> {
@@ -21,6 +24,9 @@ pub struct Record<T> {
 }
 
 pub(crate) type SenderMap<T> = Arc<RwLock<HashMap<Uuid, Sender<T>>>>;
+
+pub trait TableType: Serialize + DeserializeOwned + Clone + Debug {}
+impl<T: Serialize + DeserializeOwned + Debug + Clone> TableType for T {}
 
 /// Represents a table in the database.
 ///
@@ -32,20 +38,19 @@ pub(crate) type SenderMap<T> = Arc<RwLock<HashMap<Uuid, Sender<T>>>>;
 /// * `T` - The type of the value to be stored in the table. Must implement [`Serialize`], [`Deserialize`], and [`Debug`].
 pub struct Table<T>
 where
-    T: Serialize + Debug + Clone,
-    for<'de> T: Deserialize<'de>,
+    T: TableType + 'static,
 {
     pub(crate) engine: Db,
     root: Tree,
     name: String,
-    _table_type: PhantomData<T>,
     senders: SenderMap<Event<T>>,
+    constraints: RwLock<Vec<Constraint<T>>>,
+    _table_type: PhantomData<T>,
 }
 
 impl<T> Table<T>
 where
-    T: Serialize + Debug + Clone,
-    for<'de> T: Deserialize<'de>,
+    T: TableType,
 {
     /// Creates a new table with the given engine and name.
     ///
@@ -69,6 +74,7 @@ where
             name: name.to_owned(),
             _table_type: PhantomData::default(),
             senders: Arc::new(RwLock::new(HashMap::new())),
+            constraints: RwLock::new(Vec::new()),
         })
     }
 
@@ -95,13 +101,35 @@ where
     /// let mut table: Table<String> = db.open_table("my_table").unwrap();
     /// let id = table.insert("my_value".to_string()).unwrap();
     /// ```
-    pub fn insert(&mut self, value: T) -> DbResult<Uuid> {
+    pub fn insert(&self, value: T) -> DbResult<Uuid> {
         let uuid: Uuid = Uuid::new_v4();
-        self.root.insert(serialize(&uuid)?, serialize(&value)?)?;
-        self.dispatch_event(Event::Insert(Record {
+
+        let record = Record {
             id: uuid,
-            data: value,
-        }));
+            data: value.clone(),
+        };
+
+        // Check for unique
+        for constraint in self.constraints.read().unwrap().iter() {
+            match constraint {
+                Constraint::Unique(index) => {
+                    if index.record_exists(&record)? {
+                        return Err(crate::result::TinyDbError::Exists {
+                            constraint: index.idx_name(),
+                            record_id: record.id,
+                        });
+                    }
+                }
+                Constraint::Check(condition) => {
+                    if !condition(&value) {
+                        return Err(crate::result::TinyDbError::Condition);
+                    }
+                }
+            };
+        }
+
+        self.root.insert(serialize(&uuid)?, serialize(&value)?)?;
+        self.dispatch_event(Event::Insert(record.clone()));
 
         Ok(uuid)
     }
@@ -122,7 +150,7 @@ where
         }
     }
 
-    pub fn update(&mut self, ids: &[Uuid], value: T) -> DbResult<Vec<Record<T>>> {
+    pub fn update(&self, ids: &[Uuid], value: T) -> DbResult<Vec<Record<T>>> {
         let serialized_value = serialize(&value)?;
 
         let mut updated = vec![];
@@ -180,8 +208,8 @@ where
     /// let mut table: Table<String> = db.open_table("my_table").unwrap();
     /// let index: Index<String, Vec<u8>> = table.create_index("my_index", |value| value.to_owned()).unwrap();
     /// ```
-    pub fn create_index<I: AsRef<[u8]>>(
-        &mut self,
+    pub fn create_index<I: IndexType>(
+        &self,
         name: &str,
         key_func: impl Fn(&T) -> I + Send + Sync + 'static,
     ) -> DbResult<Index<T, I>> {
@@ -191,13 +219,41 @@ where
         let subscriber = Subscriber::new(sender_id, rx, self.senders.clone());
         self.senders.write().unwrap().insert(sender_id, tx);
 
-        Index::new(
+        Ok(SharedIndex(Arc::new(IndexInner::new(
             &format!("{}_idx_{}", self.name, name),
             &self.engine,
             &self.root,
             key_func,
             subscriber,
-        )
+        )?)))
+    }
+
+    pub fn constraint(&self, constraint: Constraint<T>) -> DbResult<()> {
+        let mut constraint_map = self.constraints.write().unwrap();
+
+        match &constraint {
+            // Check if index has already been added if constraint is unique.
+            Constraint::Unique(index) => {
+                let index_name = index.idx_name();
+
+                if constraint_map
+                    .iter()
+                    .find(|idx| {
+                        if let Constraint::Unique(unique) = idx {
+                            unique.idx_name() == index_name
+                        } else {
+                            false
+                        }
+                    })
+                    .is_none()
+                {
+                    constraint_map.push(constraint);
+                }
+            }
+            Constraint::Check(_) => constraint_map.push(constraint),
+        };
+
+        Ok(())
     }
 
     fn dispatch_event(&self, event: Event<T>) {
