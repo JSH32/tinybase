@@ -157,17 +157,6 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
     /// # Errors
     ///
     /// Returns an error if the query could not be performed.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use tinybase::{TinyBase, Table, Index};
-    ///
-    /// let db = TinyBase::new(Some("path/to/db"), false);
-    /// let mut table: Table<String> = db.open_table("my_table").unwrap();
-    /// let mut index: Index<String, Vec<u8>> = table.create_index("my_index", |value| value.as_bytes().to_vec()).unwrap();
-    /// let results: Vec<Record<String>> = index.query(&"my_value".as_bytes().to_vec()).unwrap();
-    /// ```
     pub fn select(&self, query: &I) -> DbResult<Vec<Record<T>>> {
         self.commit_log()?;
 

@@ -97,16 +97,6 @@ where
     /// # Errors
     ///
     /// Returns an error if the record could not be inserted.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use tinybase::{TinyBase, Table, Record};
-    ///
-    /// let db = TinyBase::new(Some("path/to/db"), false);
-    /// let mut table: Table<String> = db.open_table("my_table").unwrap();
-    /// let id = table.insert("my_value".to_string()).unwrap();
-    /// ```
     pub fn insert(&self, value: T) -> DbResult<u64> {
         let record = Record {
             id: self.engine.generate_id()?,
@@ -139,7 +129,18 @@ where
         Ok(record.id)
     }
 
-    pub fn delete(&mut self, id: u64) -> DbResult<Option<Record<T>>> {
+    pub fn select(&self, id: u64) -> DbResult<Option<Record<T>>> {
+        if let Some(serialized) = self.root.get(serialize(&id)?)? {
+            Ok(Some(Record {
+                id,
+                data: deserialize(&serialized)?,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn delete(&self, id: u64) -> DbResult<Option<Record<T>>> {
         let serialized_id = serialize(&id)?;
         if let Some(serialized) = self.root.remove(serialized_id)? {
             let record = Record {
@@ -203,16 +204,6 @@ where
     /// # Errors
     ///
     /// Returns an error if the index could not be created.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use tinybase::{TinyBase, Table, Index};
-    ///
-    /// let db = TinyBase::new(Some("path/to/db"), false);
-    /// let mut table: Table<String> = db.open_table("my_table").unwrap();
-    /// let index: Index<String, Vec<u8>> = table.create_index("my_index", |value| value.to_owned()).unwrap();
-    /// ```
     pub fn create_index<I: IndexType>(
         &self,
         name: &str,
@@ -265,5 +256,97 @@ where
         for sender in self.senders.read().unwrap().values() {
             sender.send(event.clone()).unwrap();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{result::TinyBaseError, TinyBase};
+
+    #[test]
+    fn table_insert_and_select() {
+        let db = TinyBase::new(None, true);
+        let table: Table<String> = db.open_table("test_table").unwrap();
+
+        // Insert a string value into the table
+        let id = table.insert("test_value".to_string()).unwrap();
+        let record = table.select(id).unwrap().expect("Record not found");
+
+        assert_eq!(record.id, id);
+        assert_eq!(record.data, "test_value");
+    }
+
+    #[test]
+    fn table_delete() {
+        let db = TinyBase::new(None, true);
+        let table: Table<String> = db.open_table("test_table").unwrap();
+
+        // Insert a string value into the table
+        let id = table.insert("test_value".to_string()).unwrap();
+
+        // Delete the record with the given ID
+        let deleted_record = table.delete(id).unwrap().expect("Record not found");
+
+        assert_eq!(deleted_record.id, id);
+        assert_eq!(deleted_record.data, "test_value");
+
+        // Check if the record is really deleted
+        assert!(table.select(id).unwrap().is_none());
+    }
+
+    #[test]
+    fn table_update() {
+        let db = TinyBase::new(None, true);
+        let table: Table<String> = db.open_table("test_table").unwrap();
+
+        // Insert a string value into the table
+        let id1 = table.insert("value1".to_string()).unwrap();
+        let id2 = table.insert("value2".to_string()).unwrap();
+
+        // Update the records with new values
+        let updated_records = table
+            .update(&[id1, id2], "updated_value".to_string())
+            .expect("Update failed");
+
+        assert_eq!(updated_records.len(), 2);
+        assert_eq!(updated_records[0].id, id1);
+        assert_eq!(updated_records[0].data, "updated_value");
+
+        assert_eq!(updated_records[1].id, id2);
+        assert_eq!(updated_records[1].data, "updated_value");
+    }
+
+    #[test]
+    fn table_constraint() {
+        let db = TinyBase::new(None, true);
+        let table: Table<String> = db.open_table("test_table").unwrap();
+
+        // Create an index for the constraint
+        let index = table
+            .create_index("name", |value| value.to_owned())
+            .unwrap();
+
+        // Add unique constraint with created index
+        assert!(table.constraint(Constraint::unique(&index)).is_ok());
+
+        // Add check constraint with condition
+        assert!(table
+            .constraint(Constraint::check(|value: &String| value.len() >= 5))
+            .is_ok());
+
+        table.insert("greater".to_owned()).unwrap();
+
+        // Unique constraint.
+        assert!(matches!(
+            table.insert("greater".to_owned()),
+            Err(TinyBaseError::Exists { .. })
+        ));
+
+        // Check constraint.
+        assert!(matches!(
+            table.insert("less".to_owned()),
+            Err(TinyBaseError::Condition)
+        ));
     }
 }

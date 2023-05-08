@@ -1,0 +1,21 @@
+[package]
+name = "tinybase"
+version = "0.1.1"
+edition = "2021"
+description = " A tiny embedded database built in Rust."
+authors = ["JSH32 <rudnik7000@gmail.com>"]
+repository = "https://github.com/JSH32/tinybase.git"
+license = "MIT"
+keywords = ["embedded", "database", "embedded-database", "storage", "db"]
+readme = "../README.md"
+
+[lib]
+name = "tinybase"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+sled = "0.34.7"
+bincode = "1.3.3"
+serde = { version = "1.0.160", features = ["derive"] }
+thiserror = "1.0.40"

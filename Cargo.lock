@@ -270,6 +270,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tinybase-derive"
+version = "0.1.1"
+dependencies = [
+ "tinybase",
+]
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
