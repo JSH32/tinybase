@@ -40,7 +40,7 @@ impl TinyBase {
     /// * `path` - An optional path to the database. If not provided, an
     ///   in-memory database will be used.
     /// * `temporary` - If true, the database will be removed when the
-    ///   `TinyDb` instance is dropped.
+    ///   `TinyBase` instance is dropped.
     ///
     /// # Example
     ///
@@ -79,9 +79,9 @@ impl TinyBase {
     /// # Example
     ///
     /// ```
-    /// use tinydb::{TinyDb, Table};
+    /// use tinybase::{TinyBase, Table};
     ///
-    /// let db = TinyDb::new(Some("path/to/db"), false);
+    /// let db = TinyBase::new(Some("path/to/db"), false);
     /// let table: Table<String> = db.open_table("my_table").unwrap();
     /// ```
     pub fn open_table<T>(&self, name: &str) -> DbResult<Table<T>>

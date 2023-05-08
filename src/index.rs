@@ -5,7 +5,6 @@ use std::vec;
 
 use bincode::{deserialize, serialize};
 use sled::{Db, IVec, Tree};
-use uuid::Uuid;
 
 use crate::record::Record;
 use crate::result::DbResult;
@@ -113,7 +112,7 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
         let key = (self.key_func)(&record.data);
 
         if let Some(data) = self.indexed_data.get(&key)? {
-            let mut vec: Vec<Uuid> = deserialize(&data)?;
+            let mut vec: Vec<u64> = deserialize(&data)?;
             vec.push(record.id);
             self.indexed_data.insert(key, serialize(&vec)?)?;
         } else {
@@ -129,7 +128,7 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
         let key = (self.key_func)(&record.data);
 
         if let Some(data) = self.indexed_data.get(&key)? {
-            let mut index_values: Vec<Uuid> = deserialize(&data)?;
+            let mut index_values: Vec<u64> = deserialize(&data)?;
 
             // We can remove the entire node here since its one element.
             if index_values.len() < 2 {
@@ -162,9 +161,9 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
     /// # Example
     ///
     /// ```
-    /// use tinydb::{TinyDb, Table, Index};
+    /// use tinybase::{TinyBase, Table, Index};
     ///
-    /// let db = TinyDb::new(Some("path/to/db"), false);
+    /// let db = TinyBase::new(Some("path/to/db"), false);
     /// let mut table: Table<String> = db.open_table("my_table").unwrap();
     /// let mut index: Index<String, Vec<u8>> = table.create_index("my_index", |value| value.as_bytes().to_vec()).unwrap();
     /// let results: Vec<Record<String>> = index.query(&"my_value".as_bytes().to_vec()).unwrap();
@@ -173,14 +172,14 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
         self.commit_log()?;
 
         Ok(if let Ok(Some(bytes)) = self.indexed_data.get(query) {
-            let uuids: Vec<Uuid> = deserialize(&bytes)?;
+            let ids: Vec<u64> = deserialize(&bytes)?;
 
             let mut results = vec![];
-            for uuid in uuids {
-                let encoded_data = self.table_data.get(serialize(&uuid)?)?;
+            for id in ids {
+                let encoded_data = self.table_data.get(serialize(&id)?)?;
                 if let Some(encoded_data) = encoded_data {
                     results.push(Record {
-                        id: uuid,
+                        id,
                         data: deserialize::<T>(&encoded_data)?,
                     })
                 }
@@ -190,6 +189,28 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
         } else {
             Vec::new()
         })
+    }
+
+    pub fn update(&self, query: &I, value: T) -> DbResult<Vec<Record<T>>> {
+        self.commit_log()?;
+
+        let mut new_data = vec![];
+
+        if let Ok(Some(bytes)) = self.indexed_data.get(query) {
+            let ids: Vec<u64> = deserialize(&bytes)?;
+            let new_value = serialize(&value)?;
+
+            for id in ids {
+                self.table_data.insert(serialize(&id)?, new_value.clone())?;
+
+                new_data.push(Record {
+                    id,
+                    data: value.clone(),
+                })
+            }
+        }
+
+        Ok(new_data)
     }
 
     /// Check if a record matches the built index key.

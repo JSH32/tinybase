@@ -8,15 +8,14 @@ use bincode::{deserialize, serialize};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use sled::{Db, Tree};
-use uuid::Uuid;
 
-use crate::constraint::Constraint;
+use crate::constraint::{Constraint, ConstraintInner};
 use crate::index::{Index, IndexInner, IndexType};
 use crate::record::Record;
 use crate::result::DbResult;
 use crate::subscriber::{Event, Subscriber};
 
-pub(crate) type SenderMap<T> = Arc<RwLock<HashMap<Uuid, Sender<T>>>>;
+pub(crate) type SenderMap<T> = Arc<RwLock<HashMap<u64, Sender<T>>>>;
 
 pub trait TableType: Serialize + DeserializeOwned + Clone + Debug {}
 impl<T: Serialize + DeserializeOwned + Debug + Clone> TableType for T {}
@@ -63,7 +62,7 @@ where
     /// Creates a new table with the given engine and name.
     ///
     /// This method is intended for internal use and should not be called directly. Instead, use the
-    /// [`crate::TinyDb`]'s `open_table()` method.
+    /// [`crate::TinyBase`]'s `open_table()` method.
     ///
     /// # Arguments
     ///
@@ -87,7 +86,7 @@ where
 
     /// Inserts a new record into the table.
     ///
-    /// This method generates a new UUID for the record and serializes it, along with the value, before
+    /// This method generates a new ID for the record and serializes it, along with the value, before
     /// inserting them into the table. Returns a [`DbResult`] containing the ID if the insert
     /// is successful or an error if it fails.
     ///
@@ -102,46 +101,45 @@ where
     /// # Example
     ///
     /// ```
-    /// use tinydb::{TinyDb, Table, Record};
+    /// use tinybase::{TinyBase, Table, Record};
     ///
-    /// let db = TinyDb::new(Some("path/to/db"), false);
+    /// let db = TinyBase::new(Some("path/to/db"), false);
     /// let mut table: Table<String> = db.open_table("my_table").unwrap();
     /// let id = table.insert("my_value".to_string()).unwrap();
     /// ```
-    pub fn insert(&self, value: T) -> DbResult<Uuid> {
-        let uuid: Uuid = Uuid::new_v4();
-
+    pub fn insert(&self, value: T) -> DbResult<u64> {
         let record = Record {
-            id: uuid,
+            id: self.engine.generate_id()?,
             data: value.clone(),
         };
 
         // Check for unique
         for constraint in self.constraints.read().unwrap().iter() {
-            match constraint {
-                Constraint::Unique(index) => {
+            match &constraint.0 {
+                ConstraintInner::Unique(index) => {
                     if index.record_exists(&record)? {
-                        return Err(crate::result::TinyDbError::Exists {
+                        return Err(crate::result::TinyBaseError::Exists {
                             constraint: index.idx_name(),
-                            record_id: record.id,
+                            id: record.id,
                         });
                     }
                 }
-                Constraint::Check(condition) => {
+                ConstraintInner::Check(condition) => {
                     if !condition(&value) {
-                        return Err(crate::result::TinyDbError::Condition);
+                        return Err(crate::result::TinyBaseError::Condition);
                     }
                 }
             };
         }
 
-        self.root.insert(serialize(&uuid)?, serialize(&value)?)?;
+        self.root
+            .insert(serialize(&record.id)?, serialize(&value)?)?;
         self.dispatch_event(Event::Insert(record.clone()));
 
-        Ok(uuid)
+        Ok(record.id)
     }
 
-    pub fn delete(&mut self, id: Uuid) -> DbResult<Option<Record<T>>> {
+    pub fn delete(&mut self, id: u64) -> DbResult<Option<Record<T>>> {
         let serialized_id = serialize(&id)?;
         if let Some(serialized) = self.root.remove(serialized_id)? {
             let record = Record {
@@ -157,7 +155,7 @@ where
         }
     }
 
-    pub fn update(&self, ids: &[Uuid], value: T) -> DbResult<Vec<Record<T>>> {
+    pub fn update(&self, ids: &[u64], value: T) -> DbResult<Vec<Record<T>>> {
         let serialized_value = serialize(&value)?;
 
         let mut updated = vec![];
@@ -209,9 +207,9 @@ where
     /// # Example
     ///
     /// ```
-    /// use tinydb::{TinyDb, Table, Index};
+    /// use tinybase::{TinyBase, Table, Index};
     ///
-    /// let db = TinyDb::new(Some("path/to/db"), false);
+    /// let db = TinyBase::new(Some("path/to/db"), false);
     /// let mut table: Table<String> = db.open_table("my_table").unwrap();
     /// let index: Index<String, Vec<u8>> = table.create_index("my_index", |value| value.to_owned()).unwrap();
     /// ```
@@ -220,7 +218,7 @@ where
         name: &str,
         key_func: impl Fn(&T) -> I + Send + Sync + 'static,
     ) -> DbResult<Index<T, I>> {
-        let sender_id = Uuid::new_v4();
+        let sender_id = self.engine.generate_id()?;
         let (tx, rx) = mpsc::channel();
 
         let subscriber = Subscriber::new(sender_id, rx, self.senders.clone());
@@ -238,15 +236,15 @@ where
     pub fn constraint(&self, constraint: Constraint<T>) -> DbResult<()> {
         let mut constraint_map = self.constraints.write().unwrap();
 
-        match &constraint {
+        match &constraint.0 {
             // Check if index has already been added if constraint is unique.
-            Constraint::Unique(index) => {
+            ConstraintInner::Unique(index) => {
                 let index_name = index.idx_name();
 
                 if constraint_map
                     .iter()
                     .find(|idx| {
-                        if let Constraint::Unique(unique) = idx {
+                        if let ConstraintInner::Unique(unique) = &idx.0 {
                             unique.idx_name() == index_name
                         } else {
                             false
@@ -257,7 +255,7 @@ where
                     constraint_map.push(constraint);
                 }
             }
-            Constraint::Check(_) => constraint_map.push(constraint),
+            ConstraintInner::Check(_) => constraint_map.push(constraint),
         };
 
         Ok(())

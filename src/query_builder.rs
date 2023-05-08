@@ -1,7 +1,5 @@
 use std::any::Any;
 
-use uuid::Uuid;
-
 use crate::{
     index::{AnyIndex, Index, IndexType},
     result::DbResult,
@@ -45,7 +43,7 @@ where
     }
 
     pub fn update(self, op: QueryOperator, value: T) -> DbResult<Vec<Record<T>>> {
-        let ids: Vec<Uuid> = Self::static_select(self.search_conditions, op)?
+        let ids: Vec<u64> = Self::static_select(self.search_conditions, op)?
             .iter()
             .map(|record| record.id)
             .collect();

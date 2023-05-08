@@ -1,18 +1,15 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum TinyDbError {
+pub enum TinyBaseError {
     #[error("sled error")]
     Sled(#[from] sled::Error),
     #[error("serializer error")]
     Serializer(#[from] bincode::Error),
     #[error("record failed to match unique constraint")]
-    Exists {
-        constraint: String,
-        record_id: uuid::Uuid,
-    },
+    Exists { constraint: String, id: u64 },
     #[error("a condition check was not met")]
     Condition,
 }
 
-pub type DbResult<T> = Result<T, TinyDbError>;
+pub type DbResult<T> = Result<T, TinyBaseError>;
