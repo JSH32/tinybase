@@ -13,9 +13,9 @@ readme = "../README.md"
 name = "tinybase_derive"
 proc-macro = true
 
-[dev-dependencies]
-tinybase = { version = "0.1.1", path = "../tinybase" }
-
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+quote = "1"
+syn = { version = "1", features = ["extra-traits"] }
+proc-macro2 = "1"
