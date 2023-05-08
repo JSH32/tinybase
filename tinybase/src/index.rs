@@ -4,6 +4,8 @@ use std::sync::Arc;
 use std::vec;
 
 use bincode::{deserialize, serialize};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use sled::{Db, IVec, Tree};
 
 use crate::record::Record;
@@ -11,8 +13,8 @@ use crate::result::DbResult;
 use crate::subscriber::{self, Subscriber};
 use crate::table::TableType;
 
-pub trait IndexType: AsRef<[u8]> {}
-impl<T: AsRef<[u8]>> IndexType for T {}
+pub trait IndexType: Serialize + DeserializeOwned {}
+impl<T: Serialize + DeserializeOwned> IndexType for T {}
 
 /// An index of a Table.
 ///
@@ -109,7 +111,7 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
 
     /// Insert a record into the index.
     fn insert(&self, record: &Record<T>) -> DbResult<()> {
-        let key = (self.key_func)(&record.data);
+        let key = serialize(&(self.key_func)(&record.data))?;
 
         if let Some(data) = self.indexed_data.get(&key)? {
             let mut vec: Vec<u64> = deserialize(&data)?;
@@ -125,7 +127,7 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
 
     /// Delete record from index.
     fn delete(&self, record: &Record<T>) -> DbResult<()> {
-        let key = (self.key_func)(&record.data);
+        let key = serialize(&(self.key_func)(&record.data))?;
 
         if let Some(data) = self.indexed_data.get(&key)? {
             let mut index_values: Vec<u64> = deserialize(&data)?;
@@ -160,24 +162,26 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
     pub fn select(&self, query: &I) -> DbResult<Vec<Record<T>>> {
         self.commit_log()?;
 
-        Ok(if let Ok(Some(bytes)) = self.indexed_data.get(query) {
-            let ids: Vec<u64> = deserialize(&bytes)?;
+        Ok(
+            if let Ok(Some(bytes)) = self.indexed_data.get(serialize(&query)?) {
+                let ids: Vec<u64> = deserialize(&bytes)?;
 
-            let mut results = vec![];
-            for id in ids {
-                let encoded_data = self.table_data.get(serialize(&id)?)?;
-                if let Some(encoded_data) = encoded_data {
-                    results.push(Record {
-                        id,
-                        data: deserialize::<T>(&encoded_data)?,
-                    })
+                let mut results = vec![];
+                for id in ids {
+                    let encoded_data = self.table_data.get(serialize(&id)?)?;
+                    if let Some(encoded_data) = encoded_data {
+                        results.push(Record {
+                            id,
+                            data: deserialize::<T>(&encoded_data)?,
+                        })
+                    }
                 }
-            }
 
-            results
-        } else {
-            Vec::new()
-        })
+                results
+            } else {
+                Vec::new()
+            },
+        )
     }
 
     pub fn update(&self, query: &I, value: T) -> DbResult<Vec<Record<T>>> {
@@ -185,7 +189,7 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
 
         let mut new_data = vec![];
 
-        if let Ok(Some(bytes)) = self.indexed_data.get(query) {
+        if let Ok(Some(bytes)) = self.indexed_data.get(serialize(&query)?) {
             let ids: Vec<u64> = deserialize(&bytes)?;
             let new_value = serialize(&value)?;
 
@@ -203,8 +207,12 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
     }
 
     /// Check if a record matches the built index key.
-    pub fn exists(&self, record: &Record<T>) -> DbResult<bool> {
-        let key = (self.key_func)(&record.data);
+    pub fn exists_record(&self, record: &Record<T>) -> DbResult<bool> {
+        self.exists((self.key_func)(&record.data))
+    }
+
+    /// Check if a record exists by the key.
+    pub fn exists(&self, key: I) -> DbResult<bool> {
         Ok(!self.select(&key)?.is_empty())
     }
 
@@ -237,6 +245,114 @@ where
     }
 
     fn record_exists(&self, record: &Record<T>) -> DbResult<bool> {
-        self.exists(record)
+        self.exists_record(record)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Table, TinyBase};
+
+    #[test]
+    fn index_sync() {
+        let db = TinyBase::new(None, true);
+        let table: Table<String> = db.open_table("test_table").unwrap();
+
+        // Insert a string value into the table
+        let id = table.insert("value1".to_string()).unwrap();
+        let id2 = table.insert("value2".to_string()).unwrap();
+
+        // Create an index for the table
+        let index = table.create_index("length", |value| value.len()).unwrap();
+
+        assert!(index.sync().is_ok());
+
+        let results = index.select(&6).unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].id, id);
+        assert_eq!(results[1].id, id2);
+    }
+
+    #[test]
+    fn index_select() {
+        let db = TinyBase::new(None, true);
+        let table: Table<String> = db.open_table("test_table").unwrap();
+
+        // Insert a string value into the table
+        table.insert("value1".to_string()).unwrap();
+        table.insert("value2".to_string()).unwrap();
+
+        // Create an index for the table
+        let index = table
+            .create_index("name", |value| value.to_owned())
+            .unwrap();
+
+        let record: Vec<Record<String>> =
+            index.select(&"value1".to_string()).expect("Select failed");
+
+        assert_eq!(record.len(), 1);
+        assert_eq!(record[0].data, "value1");
+
+        let record_2 = index
+            .select(&"non_existent_value".to_string())
+            .expect("Select failed");
+
+        assert_eq!(record_2.len(), 0);
+    }
+
+    #[test]
+    fn index_update() {
+        let db = TinyBase::new(None, true);
+        let table: Table<String> = db.open_table("test_table").unwrap();
+
+        // Create an index for the table
+        let index: Index<String, String> = table
+            .create_index("index_name", |value| value.to_owned())
+            .unwrap();
+
+        // Insert string values into the table
+        let id1 = table.insert("initial_value_1".to_string()).unwrap();
+        table.insert("initial_value_2".to_string()).unwrap();
+
+        // Update records with matching key
+        let updated_records = index
+            .update(&"initial_value_1".to_string(), "updated_value".to_string())
+            .expect("Update failed");
+
+        assert_eq!(updated_records.len(), 1);
+        assert_eq!(updated_records[0].id, id1);
+        assert_eq!(updated_records[0].data, "updated_value");
+    }
+
+    #[test]
+    fn index_exists() {
+        let db = TinyBase::new(None, true);
+        let table: Table<String> = db.open_table("test_table").unwrap();
+
+        // Create an index for the table
+        let index = table
+            .create_index("index_name", |value| value.to_owned())
+            .unwrap();
+
+        // Insert a string value into the table
+        let id = table.insert("value1".to_string()).unwrap();
+
+        let record = Record {
+            id,
+            data: "value1".to_string(),
+        };
+
+        assert!(index.exists_record(&record).expect("Exists check failed"));
+
+        let record_not_exist = Record {
+            id: 999,
+            data: "non_existent_value".to_string(),
+        };
+
+        assert!(!index
+            .exists_record(&record_not_exist)
+            .expect("Exists check failed"));
     }
 }
