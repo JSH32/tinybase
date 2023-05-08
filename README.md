@@ -24,74 +24,48 @@ tinybase = "0.1.1"
 
 ## Usage Example
 
-Here's a simple example demonstrating how to use TinyBase with a `Person` struct:
+Here's a simple example demonstrating how to use TinyBase with a `Person` struct.
+
+- [Full example](https://github.com/JSH32/tinybase/blob/master/tinybase/examples/people_derive.rs)
+- [Without derive](https://github.com/JSH32/tinybase/blob/master/tinybase/examples/people.rs)
 
 ```rust
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Repository, Serialize, Deserialize, Debug, Clone)]
 struct Person {
-    name: String,
-    last_name: String,
+    #[index]
+    #[unique]
+    pub name: String,
+    #[index]
+    pub last_name: String,
+    pub age: u8,
 }
 
 fn main() {
     let db = TinyBase::new(Some("./people"), true);
-    let person_table: Table<Person> = db.open_table("people").unwrap();
+    let people = Person::init(&db, "people").unwrap();
 
-    let name_idx = person_table
-        .create_index("name", |record| record.name.to_owned())
-        .unwrap();
-
-    let lastname_idx = person_table
-        .create_index("last_name", |record| record.last_name.to_owned())
-        .unwrap();
-
-    person_table
-        .constraint(Constraint::unique(&name_idx))
-        .unwrap();
-
-    person_table
-        .constraint(Constraint::check(|person| !person.name.contains(".")))
-        .unwrap();
-
-    init_example_data(&person_table);
+    init_example_data(&people);
 
     println!(
-        "{:#?}",
-        QueryBuilder::new(&person_table)
-            .by(&name_idx, "John".to_string())
-            .by(&lastname_idx, "Jones".to_string())
+        "Found all the Smith's:\n{:#?}",
+        people.find_by_last_name("Smith".to_owned()).unwrap()
+    );
+
+    println!(
+        "Replaced name of John OR lastname Jones with Kevin Spacey:\n{:#?}",
+        QueryBuilder::new(&people)
+            .by(&people.name, "John".to_string())
+            .by(&people.last_name, "Jones".to_string())
             .update(
                 QueryOperator::Or,
                 Person {
                     name: "Kevin".to_string(),
-                    last_name: "Spacey".to_string()
+                    last_name: "Spacey".to_string(),
+                    age: 63
                 }
             )
             .unwrap()
     );
-}
-
-fn init_example_data(person_table: &Table<Person>) {
-    person_table
-        .insert(Person {
-            name: "John".to_string(),
-            last_name: "Smith".to_string(),
-        })
-        .unwrap();
-
-    person_table
-        .insert(Person {
-            name: "Bill".to_string(),
-            last_name: "Smith".to_string(),
-        })
-        .unwrap();
-
-    person_table
-        .insert(Person {
-            name: "Coraline".to_string(),
-            last_name: "Jones".to_string(),
-        })
-        .unwrap();
 }
 ```
 
