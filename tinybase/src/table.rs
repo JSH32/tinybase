@@ -4,12 +4,12 @@ use std::ops::Deref;
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, RwLock};
 
-use bincode::{deserialize, serialize};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use sled::{Db, Tree};
 
 use crate::constraint::{Constraint, ConstraintInner};
+use crate::encoding::{decode, encode};
 use crate::index::{Index, IndexInner, IndexType};
 use crate::record::Record;
 use crate::result::DbResult;
@@ -122,18 +122,17 @@ where
             };
         }
 
-        self.root
-            .insert(serialize(&record.id)?, serialize(&value)?)?;
+        self.root.insert(encode(&record.id)?, encode(&value)?)?;
         self.dispatch_event(Event::Insert(record.clone()));
 
         Ok(record.id)
     }
 
     pub fn select(&self, id: u64) -> DbResult<Option<Record<T>>> {
-        if let Some(serialized) = self.root.get(serialize(&id)?)? {
+        if let Some(serialized) = self.root.get(encode(&id)?)? {
             Ok(Some(Record {
                 id,
-                data: deserialize(&serialized)?,
+                data: decode(&serialized)?,
             }))
         } else {
             Ok(None)
@@ -141,11 +140,11 @@ where
     }
 
     pub fn delete(&self, id: u64) -> DbResult<Option<Record<T>>> {
-        let serialized_id = serialize(&id)?;
+        let serialized_id = encode(&id)?;
         if let Some(serialized) = self.root.remove(serialized_id)? {
             let record = Record {
                 id,
-                data: deserialize(&serialized)?,
+                data: decode(&serialized)?,
             };
 
             self.dispatch_event(Event::Remove(record.clone()));
@@ -157,12 +156,12 @@ where
     }
 
     pub fn update(&self, ids: &[u64], value: T) -> DbResult<Vec<Record<T>>> {
-        let serialized_value = serialize(&value)?;
+        let serialized_value = encode(&value)?;
 
         let mut updated = vec![];
 
         for id in ids {
-            self.root.update_and_fetch(serialize(&id)?, |old_value| {
+            self.root.update_and_fetch(encode(&id)?, |old_value| {
                 if let Some(old_value) = old_value {
                     updated.push(Record {
                         id: id.clone(),
@@ -171,7 +170,7 @@ where
 
                     self.dispatch_event(Event::Update {
                         id: id.clone(),
-                        old_data: deserialize(old_value).unwrap(),
+                        old_data: decode(old_value).unwrap(),
                         new_data: value.clone(),
                     });
 

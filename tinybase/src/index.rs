@@ -3,11 +3,11 @@ use std::ops::Deref;
 use std::sync::Arc;
 use std::vec;
 
-use bincode::{deserialize, serialize};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use sled::{Db, IVec, Tree};
 
+use crate::encoding::{decode, encode};
 use crate::record::Record;
 use crate::result::DbResult;
 use crate::subscriber::{self, Subscriber};
@@ -80,8 +80,8 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
             // This should always succeed
             if let Some(data) = self.table_data.get(&key.clone()?)? {
                 self.insert(&Record {
-                    id: deserialize(&key?)?,
-                    data: deserialize(&data)?,
+                    id: decode(&key?)?,
+                    data: decode(&data)?,
                 })?;
             }
         }
@@ -111,15 +111,14 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
 
     /// Insert a record into the index.
     fn insert(&self, record: &Record<T>) -> DbResult<()> {
-        let key = serialize(&(self.key_func)(&record.data))?;
+        let key = encode(&(self.key_func)(&record.data))?;
 
         if let Some(data) = self.indexed_data.get(&key)? {
-            let mut vec: Vec<u64> = deserialize(&data)?;
+            let mut vec: Vec<u64> = decode(&data)?;
             vec.push(record.id);
-            self.indexed_data.insert(key, serialize(&vec)?)?;
+            self.indexed_data.insert(key, encode(&vec)?)?;
         } else {
-            self.indexed_data
-                .insert(key, serialize(&vec![record.id])?)?;
+            self.indexed_data.insert(key, encode(&vec![record.id])?)?;
         }
 
         Ok(())
@@ -127,10 +126,10 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
 
     /// Delete record from index.
     fn delete(&self, record: &Record<T>) -> DbResult<()> {
-        let key = serialize(&(self.key_func)(&record.data))?;
+        let key = encode(&(self.key_func)(&record.data))?;
 
         if let Some(data) = self.indexed_data.get(&key)? {
-            let mut index_values: Vec<u64> = deserialize(&data)?;
+            let mut index_values: Vec<u64> = decode(&data)?;
 
             // We can remove the entire node here since its one element.
             if index_values.len() < 2 {
@@ -140,7 +139,7 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
                 if let Some(pos) = index_values.iter().position(|id| *id == record.id) {
                     index_values.remove(pos);
                     // Replace the row with one that doesn't have the element.
-                    self.indexed_data.insert(&key, serialize(&index_values)?)?;
+                    self.indexed_data.insert(&key, encode(&index_values)?)?;
                 }
             }
         }
@@ -163,16 +162,16 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
         self.commit_log()?;
 
         Ok(
-            if let Ok(Some(bytes)) = self.indexed_data.get(serialize(&query)?) {
-                let ids: Vec<u64> = deserialize(&bytes)?;
+            if let Ok(Some(bytes)) = self.indexed_data.get(encode(&query)?) {
+                let ids: Vec<u64> = decode(&bytes)?;
 
                 let mut results = vec![];
                 for id in ids {
-                    let encoded_data = self.table_data.get(serialize(&id)?)?;
+                    let encoded_data = self.table_data.get(encode(&id)?)?;
                     if let Some(encoded_data) = encoded_data {
                         results.push(Record {
                             id,
-                            data: deserialize::<T>(&encoded_data)?,
+                            data: decode::<T>(&encoded_data)?,
                         })
                     }
                 }
@@ -189,12 +188,12 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
 
         let mut new_data = vec![];
 
-        if let Ok(Some(bytes)) = self.indexed_data.get(serialize(&query)?) {
-            let ids: Vec<u64> = deserialize(&bytes)?;
-            let new_value = serialize(&value)?;
+        if let Ok(Some(bytes)) = self.indexed_data.get(encode(&query)?) {
+            let ids: Vec<u64> = decode(&bytes)?;
+            let new_value = encode(&value)?;
 
             for id in ids {
-                self.table_data.insert(serialize(&id)?, new_value.clone())?;
+                self.table_data.insert(encode(&id)?, new_value.clone())?;
 
                 new_data.push(Record {
                     id,

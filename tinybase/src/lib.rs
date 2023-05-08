@@ -24,6 +24,7 @@ use table::{TableInner, TableType};
 pub mod constraint;
 pub use constraint::Constraint;
 
+mod encoding;
 mod subscriber;
 
 /// A tiny structured database based on sled.
