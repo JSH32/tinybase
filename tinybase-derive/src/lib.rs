@@ -1,78 +1,46 @@
+mod utils;
 use core::panic;
 
 use proc_macro::TokenStream;
-use quote::{quote, ToTokens};
-use syn::{
-    parse_macro_input, Data, DeriveInput, Field, Fields, FieldsNamed, Ident, Meta, MetaList, Path,
-};
+use quote::quote;
+use syn::{parse_macro_input, Data, DeriveInput, Field, Fields, FieldsNamed, Ident};
+use utils::{has_attribute, validate_attributes};
 
-#[proc_macro_derive(TinyBaseTable, attributes(index))]
-pub fn table_derive(input: TokenStream) -> TokenStream {
+#[proc_macro_derive(Repository, attributes(index, unique))]
+pub fn repository(input: TokenStream) -> TokenStream {
     let ast = parse_macro_input!(input as DeriveInput);
     let name = ast.ident;
 
-    let fields = if let Data::Struct(syn::DataStruct {
-        fields: Fields::Named(FieldsNamed { ref named, .. }),
-        ..
-    }) = ast.data
-    {
-        named
-    } else {
-        panic!("can only derive on a struct")
+    let fields = match ast.data {
+        Data::Struct(syn::DataStruct {
+            fields: Fields::Named(FieldsNamed { ref named, .. }),
+            ..
+        }) => named,
+        _ => panic!("can only derive on a struct"),
     };
 
-    let mut index_names = vec![];
-    let mut index_members = vec![];
-
-    let mut by_index = vec![];
-    let mut index_initializers = vec![];
-    for field in fields {
-        let Field { attrs, .. } = field;
-
-        for attr in attrs {
-            if let Ok(meta) = attr.parse_meta() {
-                if let Meta::Path(path) = meta {
-                    // Check for index attribute.
-                    if path.get_ident().unwrap()
-                        != &Ident::new("index", proc_macro2::Span::call_site())
-                    {
-                        continue;
-                    }
-
-                    let field_name = field.ident.as_ref().unwrap();
-                    let field_name_method =
-                        syn::Ident::new(&format!("by_{}", field_name), field_name.span());
-
-                    index_names.push(field_name.clone());
-
-                    let type_name = &field.ty;
-                    index_members.push(quote! {
-                        #field_name: tinybase::Index<#name, #type_name>,
-                    });
-
-                    by_index.push(quote! {
-                        pub fn #field_name_method(&self, #field_name: #type_name) -> tinybase::result::DbResult<Vec<tinybase::Record<#name>>> {
-                            self.#field_name.select(&#field_name)
-                        }
-                    });
-
-                    let field_str = format!("{}", field_name);
-
-                    index_initializers.push(quote! {
-                        let #field_name = _table.create_index(#field_str, |record| record.#field_name.clone()).unwrap();
-                    })
-                }
-            }
-        }
-    }
+    let (index_names, index_members, by_index, index_initializers) =
+        match process_fields(&name, fields.iter()) {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
 
     let vis = ast.vis.clone();
-    let wrapper_name = syn::Ident::new(&format!("{}Queryable", name.to_string()), name.span());
+    let wrapper_name = syn::Ident::new(&format!("{}Repository", name.to_string()), name.span());
 
     let expanded = quote! {
+        #[derive(Clone)]
         #vis struct #wrapper_name {
-            pub _table: tinybase::Table<#name>,
-            pub #(#index_members)*
+            _table: tinybase::Table<#name>,
+            #(#index_members)*
+        }
+
+        impl std::ops::Deref for #wrapper_name {
+            type Target = tinybase::Table<#name>;
+
+            fn deref(&self) -> &Self::Target {
+                &self._table
+            }
         }
 
         impl #wrapper_name {
@@ -92,4 +60,88 @@ pub fn table_derive(input: TokenStream) -> TokenStream {
     };
 
     expanded.into()
+}
+
+/// Process fields and decide what should be generated for each field.
+fn process_fields<'a>(
+    struct_name: &proc_macro2::Ident,
+    fields: impl Iterator<Item = &'a Field>,
+) -> Result<
+    (
+        Vec<Ident>,
+        Vec<proc_macro2::TokenStream>,
+        Vec<proc_macro2::TokenStream>,
+        Vec<proc_macro2::TokenStream>,
+    ),
+    TokenStream,
+> {
+    let mut index_names = vec![];
+    let mut index_members = vec![];
+
+    let mut by_index = vec![];
+    let mut index_initializers = vec![];
+
+    for field in fields {
+        if let Some(ident) = validate_attributes(field, "index", &["unique"]) {
+            return Err(syn::Error::new(
+                ident.span(),
+                "This attribute requires the #[index] attribute",
+            )
+            .to_compile_error()
+            .into());
+        }
+
+        if has_attribute(field, "index").is_some() {
+            let (field_name, type_name) = (field.ident.as_ref().unwrap(), &field.ty);
+
+            index_names.push(field_name.clone());
+
+            index_members.push(quote! {
+                pub #field_name: tinybase::Index<#struct_name, #type_name>,
+            });
+
+            let methods = create_methods(field_name, type_name, struct_name);
+
+            by_index.push(methods);
+
+            let field_str = format!("{}", field_name);
+
+            index_initializers.push(quote! {
+                let #field_name = _table.create_index(#field_str, |record| record.#field_name.clone())?;
+            });
+
+            if has_attribute(field, "unique").is_some() {
+                index_initializers.push(quote! {
+                    _table.constraint(tinybase::Constraint::unique(&#field_name))?;
+                })
+            }
+        }
+    }
+
+    Ok((index_names, index_members, by_index, index_initializers))
+}
+
+/// Create methods for an index.
+fn create_methods(
+    field_name: &Ident,
+    type_name: &syn::Type,
+    name: &Ident,
+) -> proc_macro2::TokenStream {
+    let find_method = syn::Ident::new(&format!("find_by_{}", field_name), field_name.span());
+    let delete_method = syn::Ident::new(&format!("delete_by_{}", field_name), field_name.span());
+    let update_method = syn::Ident::new(&format!("update_by_{}", field_name), field_name.span());
+
+    quote! {
+        pub fn #find_method(&self, #field_name: #type_name) -> tinybase::result::DbResult<Vec<tinybase::Record<#name>>> {
+            self.#field_name.select(&#field_name)
+        }
+
+        pub fn #delete_method(&self, #field_name: #type_name) -> tinybase::result::DbResult<Vec<tinybase::Record<#name>>> {
+            self.#field_name.delete(&#field_name)
+        }
+
+        pub fn #update_method(&self, #field_name: #type_name, value: #name) -> tinybase::result::DbResult<Vec<tinybase::Record<#name>>> {
+            self.#field_name.update(&#field_name, value)
+        }
+    }
 }

@@ -93,14 +93,14 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
         // Commit log of events on the main table.
         while let Ok(event) = self.subscriber.rx.try_recv() {
             match event {
-                subscriber::Event::Remove(record) => self.delete(&record)?,
+                subscriber::Event::Remove(record) => self.remove(&record)?,
                 subscriber::Event::Insert(record) => self.insert(&record)?,
                 subscriber::Event::Update {
                     id,
                     old_data,
                     new_data,
                 } => {
-                    self.delete(&Record { id, data: old_data })?;
+                    self.remove(&Record { id, data: old_data })?;
                     self.insert(&Record { id, data: new_data })?;
                 }
             }
@@ -125,7 +125,7 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
     }
 
     /// Delete record from index.
-    fn delete(&self, record: &Record<T>) -> DbResult<()> {
+    fn remove(&self, record: &Record<T>) -> DbResult<()> {
         let key = encode(&(self.key_func)(&record.data))?;
 
         if let Some(data) = self.indexed_data.get(&key)? {
@@ -145,6 +145,17 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
         }
 
         Ok(())
+    }
+
+    pub fn delete(&self, query: &I) -> DbResult<Vec<Record<T>>> {
+        let records = self.select(query)?;
+
+        for record in &records {
+            self.table_data.remove(&encode(&record.id)?)?;
+            self.remove(&record)?;
+        }
+
+        Ok(records)
     }
 
     /// Query by index key.
