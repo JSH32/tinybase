@@ -88,29 +88,48 @@ where
             data: value.clone(),
         };
 
-        // Check for unique
+        self.check_constraint(&record, &vec![])?;
+
+        self.root.insert(encode(&record.id)?, encode(&value)?)?;
+        self.dispatch_event(Event::Insert(record.clone()));
+
+        Ok(record.id)
+    }
+
+    /// Check if constraint is met.
+    /// Additional items can be specified if there are some items that aren't inserted yet.
+    fn check_constraint(&self, record: &Record<T>, additional_items: &Vec<T>) -> DbResult<()> {
         for constraint in self.constraints.read().unwrap().iter() {
             match &constraint.0 {
                 ConstraintInner::Unique(index) => {
-                    if index.record_exists(&record)? {
+                    let matches = index.record_exists(record)?;
+                    // Check if record being changed is the same record that has the index error.
+                    if matches.len() > 1 || matches.len() == 1 && matches[0] != record.id {
                         return Err(crate::result::TinyBaseError::Exists {
                             constraint: index.idx_name(),
                             id: record.id,
                         });
                     }
+
+                    let mut matches = vec![];
+                    for additional in additional_items {
+                        let key = index.gen_key(&additional)?;
+                        if matches.contains(&key) {
+                            return Err(crate::result::TinyBaseError::BatchOperationConstraints);
+                        }
+
+                        matches.push(key);
+                    }
                 }
                 ConstraintInner::Check(condition) => {
-                    if !condition(&value) {
+                    if !condition(&record.data) {
                         return Err(crate::result::TinyBaseError::Condition);
                     }
                 }
             };
         }
 
-        self.root.insert(encode(&record.id)?, encode(&value)?)?;
-        self.dispatch_event(Event::Insert(record.clone()));
-
-        Ok(record.id)
+        Ok(())
     }
 
     /// Select a record by its ID.
@@ -163,35 +182,45 @@ where
     /// # Arguments
     ///
     /// * `ids` - The IDs of the records to update.
-    /// * `value` - The new value to set for the updated records.
+    /// * `updater` - Closure to generate the new data based on the old data.
     ///
     /// # Returns
     ///
-    /// A [`Vec`] containing the updated records.
-    pub fn update(&self, ids: &[u64], value: T) -> DbResult<Vec<Record<T>>> {
-        let serialized_value = encode(&value)?;
+    /// All updated records.
+    pub fn update(&self, ids: &[u64], updater: fn(T) -> T) -> DbResult<Vec<Record<T>>> {
+        let mut records = vec![];
+        for id in ids {
+            if let Some(old) = self.select(*id)? {
+                records.push(Record {
+                    id: old.id,
+                    data: updater(old.data),
+                });
+            }
+        }
+
+        let additional: Vec<T> = records.iter().map(|r| r.data.clone()).collect();
+        for record in &records {
+            self.check_constraint(record, &additional)?;
+        }
 
         let mut updated = vec![];
+        for record in records {
+            self.root
+                .update_and_fetch(encode(&record.id)?, |old_value| {
+                    if let Some(old_value) = old_value {
+                        updated.push(record.clone());
 
-        for id in ids {
-            self.root.update_and_fetch(encode(&id)?, |old_value| {
-                if let Some(old_value) = old_value {
-                    updated.push(Record {
-                        id: id.clone(),
-                        data: value.clone(),
-                    });
+                        self.dispatch_event(Event::Update {
+                            id: record.id.clone(),
+                            old_data: decode(old_value).unwrap(),
+                            new_data: record.data.clone(),
+                        });
 
-                    self.dispatch_event(Event::Update {
-                        id: id.clone(),
-                        old_data: decode(old_value).unwrap(),
-                        new_data: value.clone(),
-                    });
-
-                    Some(serialized_value.clone())
-                } else {
-                    None
-                }
-            })?;
+                        Some(encode(&record.data).unwrap())
+                    } else {
+                        None
+                    }
+                })?;
         }
 
         Ok(updated)
@@ -315,7 +344,7 @@ mod tests {
 
         // Update the records with new values
         let updated_records = table
-            .update(&[id1, id2], "updated_value".to_string())
+            .update(&[id1, id2], |_| "updated_value".to_string())
             .expect("Update failed");
 
         assert_eq!(updated_records.len(), 2);

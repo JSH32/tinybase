@@ -1,6 +1,6 @@
 [package]
 name = "tinybase"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 description = " A tiny embedded database built in Rust."
 authors = ["JSH32 <rudnik7000@gmail.com>"]

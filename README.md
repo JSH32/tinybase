@@ -58,10 +58,9 @@ fn main() {
                 ConditionBuilder::by(&people.name, "John".to_string()),
                 ConditionBuilder::by(&people.last_name, "Jones".to_string()),
             ))
-            .update(Person {
-                name: "Kevin".to_string(),
-                last_name: "Spacey".to_string(),
-                age: 63,
+            .update(|record| Person {
+                last_name: "Brown".to_owned(),
+                ..record
             })
             .unwrap()
     );

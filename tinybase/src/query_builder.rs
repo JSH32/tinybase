@@ -127,19 +127,19 @@ where
     ///
     /// # Arguments
     ///
-    /// * `value` - The new value to set for the updated records.
+    /// * `updater` - Closure to generate the new data based on the old data.
     ///
     /// # Returns
     ///
     /// All updated [`Record`] instances.
-    pub fn update(self, value: T) -> DbResult<Vec<Record<T>>> {
+    pub fn update(self, updater: fn(T) -> T) -> DbResult<Vec<Record<T>>> {
         self.check_valid()?;
         let ids: Vec<u64> = Self::select_recursive(self.condition.unwrap())?
             .iter()
             .map(|record| record.id)
             .collect();
 
-        self.table.update(&ids, value)
+        self.table.update(&ids, updater)
     }
 
     /// Deletes the records from the table based on the query condition.
@@ -319,7 +319,7 @@ mod tests {
                 ConditionBuilder::by(&index, "value1".to_string()),
                 ConditionBuilder::by(&length, 6),
             ))
-            .update("updated_value".to_string())
+            .update(|_| "updated_value".to_string())
             .expect("Update failed");
 
         assert_eq!(updated_records.len(), 1);

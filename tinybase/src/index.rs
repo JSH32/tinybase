@@ -256,7 +256,7 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
     }
 
     /// Check if a record matches the built index key.
-    pub fn exists_record(&self, record: &Record<T>) -> DbResult<bool> {
+    pub fn exists_record(&self, record: &Record<T>) -> DbResult<Vec<u64>> {
         self.exists((self.key_func)(&record.data))
     }
 
@@ -265,8 +265,8 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
     /// # Arguments
     ///
     /// * `key` - The index key to check for existence.
-    pub fn exists(&self, key: I) -> DbResult<bool> {
-        Ok(!self.select(&key)?.is_empty())
+    pub fn exists(&self, key: I) -> DbResult<Vec<u64>> {
+        Ok(self.select(&key)?.iter().map(|record| record.id).collect())
     }
 
     pub fn index_name(&self) -> String {
@@ -274,16 +274,22 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
             .unwrap()
             .to_string()
     }
+
+    pub fn generate_key(&self, data: &T) -> DbResult<Vec<u8>> {
+        encode(&(self.key_func)(&data))
+    }
 }
 
 /// Type which [`Index`] can be casted to which doesn't require the `I` type parameter.
 pub trait AnyIndex<T: TableType> {
     /// Alias for `exists_record`.
-    fn record_exists(&self, record: &Record<T>) -> DbResult<bool>;
+    fn record_exists(&self, record: &Record<T>) -> DbResult<Vec<u64>>;
     /// Select which allows any type.
     fn search(&self, value: Box<dyn Any>) -> DbResult<Vec<Record<T>>>;
     /// Alias for `index_name`.
     fn idx_name(&self) -> String;
+    /// Generate a key and return encoded value.
+    fn gen_key(&self, data: &T) -> DbResult<Vec<u8>>;
 }
 
 impl<T, I> AnyIndex<T> for Index<T, I>
@@ -300,8 +306,12 @@ where
         self.index_name()
     }
 
-    fn record_exists(&self, record: &Record<T>) -> DbResult<bool> {
+    fn record_exists(&self, record: &Record<T>) -> DbResult<Vec<u64>> {
         self.exists_record(record)
+    }
+
+    fn gen_key(&self, data: &T) -> DbResult<Vec<u8>> {
+        self.generate_key(data)
     }
 }
 
@@ -400,15 +410,19 @@ mod tests {
             data: "value1".to_string(),
         };
 
-        assert!(index.exists_record(&record).expect("Exists check failed"));
+        assert!(!index
+            .exists_record(&record)
+            .expect("Exists check failed")
+            .is_empty());
 
         let record_not_exist = Record {
             id: 999,
             data: "non_existent_value".to_string(),
         };
 
-        assert!(!index
+        assert!(index
             .exists_record(&record_not_exist)
-            .expect("Exists check failed"));
+            .expect("Exists check failed")
+            .is_empty());
     }
 }

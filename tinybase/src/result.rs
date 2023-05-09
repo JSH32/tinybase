@@ -12,6 +12,8 @@ pub enum TinyBaseError {
     Condition,
     #[error("query builder error")]
     QueryBuilder(String),
+    #[error("batch operation violates constraints")]
+    BatchOperationConstraints,
 }
 
 pub type DbResult<T> = Result<T, TinyBaseError>;

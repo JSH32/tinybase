@@ -36,16 +36,15 @@ fn main() {
     );
 
     println!(
-        "Replaced name of John OR lastname Jones with Kevin Spacey:\n{:#?}",
+        "Replaced lastnames with Brown:\n{:#?}",
         QueryBuilder::new(&person_table)
             .with_condition(ConditionBuilder::or(
                 ConditionBuilder::by(&name_idx, "John".to_string()),
                 ConditionBuilder::by(&lastname_idx, "Jones".to_string()),
             ))
-            .update(Person {
-                name: "Kevin".to_string(),
-                last_name: "Spacey".to_string(),
-                age: 63,
+            .update(|record| Person {
+                last_name: "Brown".to_owned(),
+                ..record
             })
             .unwrap()
     );
