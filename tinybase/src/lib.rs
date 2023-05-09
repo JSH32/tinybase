@@ -9,7 +9,7 @@ pub mod operation;
 pub use operation::Operation;
 
 pub mod query_builder;
-pub use query_builder::{QueryBuilder, QueryOperator};
+pub use query_builder::{ConditionBuilder, QueryBuilder};
 
 pub mod result;
 pub use result::DbResult;

@@ -54,16 +54,15 @@ fn main() {
     println!(
         "Replaced name of John OR lastname Jones with Kevin Spacey:\n{:#?}",
         QueryBuilder::new(&people)
-            .by(&people.name, "John".to_string())
-            .by(&people.last_name, "Jones".to_string())
-            .update(
-                QueryOperator::Or,
-                Person {
-                    name: "Kevin".to_string(),
-                    last_name: "Spacey".to_string(),
-                    age: 63
-                }
-            )
+            .with_condition(ConditionBuilder::or(
+                ConditionBuilder::by(&people.name, "John".to_string()),
+                ConditionBuilder::by(&people.last_name, "Jones".to_string()),
+            ))
+            .update(Person {
+                name: "Kevin".to_string(),
+                last_name: "Spacey".to_string(),
+                age: 63,
+            })
             .unwrap()
     );
 }

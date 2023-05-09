@@ -10,6 +10,8 @@ pub enum TinyBaseError {
     Exists { constraint: String, id: u64 },
     #[error("a condition check was not met")]
     Condition,
+    #[error("query builder error")]
+    QueryBuilder(String),
 }
 
 pub type DbResult<T> = Result<T, TinyBaseError>;

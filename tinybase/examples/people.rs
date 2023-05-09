@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use tinybase::{Constraint, QueryBuilder, QueryOperator, Table, TinyBase};
+use tinybase::{ConditionBuilder, Constraint, QueryBuilder, Table, TinyBase};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Person {
@@ -38,16 +38,15 @@ fn main() {
     println!(
         "Replaced name of John OR lastname Jones with Kevin Spacey:\n{:#?}",
         QueryBuilder::new(&person_table)
-            .by(&name_idx, "John".to_string())
-            .by(&lastname_idx, "Jones".to_string())
-            .update(
-                QueryOperator::Or,
-                Person {
-                    name: "Kevin".to_string(),
-                    last_name: "Spacey".to_string(),
-                    age: 63
-                }
-            )
+            .with_condition(ConditionBuilder::or(
+                ConditionBuilder::by(&name_idx, "John".to_string()),
+                ConditionBuilder::by(&lastname_idx, "Jones".to_string()),
+            ))
+            .update(Person {
+                name: "Kevin".to_string(),
+                last_name: "Spacey".to_string(),
+                age: 63,
+            })
             .unwrap()
     );
 }
