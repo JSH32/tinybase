@@ -16,12 +16,7 @@ use crate::table::TableType;
 pub trait IndexType: Serialize + DeserializeOwned {}
 impl<T: Serialize + DeserializeOwned> IndexType for T {}
 
-/// An index of a Table.
-///
-/// # Type Parameters
-///
-/// * `T` - The type of the value to be stored in the table.
-/// * `I` - The type of the index key.
+/// Provides methods for interacting with an index on a typed table.
 pub struct Index<T: TableType, I: IndexType>(pub(crate) Arc<IndexInner<T, I>>);
 
 impl<T: TableType, I: IndexType> Clone for Index<T, I> {
@@ -38,6 +33,7 @@ impl<T: TableType, I: IndexType> Deref for Index<T, I> {
     }
 }
 
+/// Inner state of an index on a typed table.
 pub struct IndexInner<T: TableType, I: IndexType> {
     table_data: Tree,
     /// Function which will be used to compute the key per insert.
@@ -49,6 +45,22 @@ pub struct IndexInner<T: TableType, I: IndexType> {
 }
 
 impl<T: TableType, I: IndexType> IndexInner<T, I> {
+    /// Creates a new index with the given name, engine, table data, key function, and subscriber.
+    ///
+    /// This method is intended for internal use and should not be called directly. Instead, use the
+    /// [`crate::Table`]'s `create_index()` method.
+    ///
+    /// # Arguments
+    ///
+    /// * `idx_name` - The name of the index.
+    /// * `engine` - The database engine.
+    /// * `table_data` - The data of the table to be indexed.
+    /// * `key_func` - A function which computes the index key for each record.
+    /// * `subscriber` - A subscriber to uncommitted operation log.
+    ///
+    /// # Returns
+    ///
+    /// The new [`IndexInner`] instance.
     pub(crate) fn new(
         idx_name: &str,
         engine: &Db,
@@ -89,6 +101,7 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
         Ok(())
     }
 
+    /// Commits the received events from the main table to the index.
     fn commit_log(&self) -> DbResult<()> {
         // Commit log of events on the main table.
         while let Ok(event) = self.subscriber.rx.try_recv() {
@@ -109,7 +122,11 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
         Ok(())
     }
 
-    /// Insert a record into the index.
+    /// Insert a record into the index. The index key will be computed.
+    ///
+    /// # Arguments
+    ///
+    /// * `record` - The record to insert.
     fn insert(&self, record: &Record<T>) -> DbResult<()> {
         let key = encode(&(self.key_func)(&record.data))?;
 
@@ -124,7 +141,12 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
         Ok(())
     }
 
-    /// Delete record from index.
+    /// Delete a record from the index.
+    /// The record will compute an index key to delete by.
+    ///
+    /// # Arguments
+    ///
+    /// * `record` - The record to delete.
     fn remove(&self, record: &Record<T>) -> DbResult<()> {
         let key = encode(&(self.key_func)(&record.data))?;
 
@@ -147,6 +169,15 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
         Ok(())
     }
 
+    /// Delete records from the table and the index based on the given query.
+    ///
+    /// # Arguments
+    ///
+    /// * `query` - A reference to the query key.
+    ///
+    /// # Returns
+    ///
+    /// All the deleted [`Record`] instances.
     pub fn delete(&self, query: &I) -> DbResult<Vec<Record<T>>> {
         let records = self.select(query)?;
 
@@ -158,17 +189,15 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
         Ok(records)
     }
 
-    /// Query by index key.
-    ///
-    /// This method searches for multiple [`Record`]'s that match the index key provided.
+    /// Select records from the table based on the given query.
     ///
     /// # Arguments
     ///
     /// * `query` - A reference to the query key.
     ///
-    /// # Errors
+    /// # Returns
     ///
-    /// Returns an error if the query could not be performed.
+    /// All selected [`Record`] instances.
     pub fn select(&self, query: &I) -> DbResult<Vec<Record<T>>> {
         self.commit_log()?;
 
@@ -194,6 +223,16 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
         )
     }
 
+    /// Update records in the table and the index based on the given query and new value.
+    ///
+    /// # Arguments
+    ///
+    /// * `query` - A reference to the query key.
+    /// * `value` - The new value to set for the updated records.
+    ///
+    /// # Returns
+    ///
+    /// All updated [`Record`] instances.
     pub fn update(&self, query: &I, value: T) -> DbResult<Vec<Record<T>>> {
         self.commit_log()?;
 
@@ -221,7 +260,11 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
         self.exists((self.key_func)(&record.data))
     }
 
-    /// Check if a record exists by the key.
+    /// Check if a record exists by the index key.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The index key to check for existence.
     pub fn exists(&self, key: I) -> DbResult<bool> {
         Ok(!self.select(&key)?.is_empty())
     }
@@ -235,8 +278,11 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
 
 /// Type which [`Index`] can be casted to which doesn't require the `I` type parameter.
 pub trait AnyIndex<T: TableType> {
+    /// Alias for `exists_record`.
     fn record_exists(&self, record: &Record<T>) -> DbResult<bool>;
+    /// Select which allows any type.
     fn search(&self, value: Box<dyn Any>) -> DbResult<Vec<Record<T>>>;
+    /// Alias for `index_name`.
     fn idx_name(&self) -> String;
 }
 

@@ -7,6 +7,7 @@ use crate::{
     Record,
 };
 
+/// A single query condition.
 pub enum QueryCondition<T>
 where
     T: TableType + 'static,
@@ -16,21 +17,45 @@ where
     Or(Box<QueryCondition<T>>, Box<QueryCondition<T>>),
 }
 
+/// For building and chaining query conditions.
 pub struct ConditionBuilder<T: TableType + 'static>(QueryCondition<T>);
 
 impl<T: TableType + 'static> ConditionBuilder<T> {
+    /// Creates a new query condition using the specified index and value.
+    ///
+    /// # Arguments
+    ///
+    /// * `index` - The index to use for the query.
+    /// * `value` - The value to search for in the index.
     pub fn by<I: IndexType + 'static>(index: &Index<T, I>, value: I) -> Self {
         Self(QueryCondition::By(Box::new(index.clone()), Box::new(value)))
     }
 
+    /// Creates a new query condition representing the logical AND of two existing conditions.
+    ///
+    /// # Arguments
+    ///
+    /// * `left` - The left-hand side condition.
+    /// * `right` - The right-hand side condition.
     pub fn and(left: Self, right: Self) -> Self {
         Self(QueryCondition::And(Box::new(left.0), Box::new(right.0)))
     }
 
+    /// Creates a new query condition representing the logical OR of two existing conditions.
+    ///
+    /// # Arguments
+    ///
+    /// * `left` - The left-hand side condition.
+    /// * `right` - The right-hand side condition.
     pub fn or(left: Self, right: Self) -> Self {
         Self(QueryCondition::Or(Box::new(left.0), Box::new(right.0)))
     }
 
+    /// Builds the final query condition.
+    ///
+    /// # Returns
+    ///
+    /// A new [`QueryCondition`].
     pub fn build(self) -> QueryCondition<T> {
         self.0
     }
@@ -42,6 +67,7 @@ impl<T: TableType + 'static> Into<QueryCondition<T>> for ConditionBuilder<T> {
     }
 }
 
+/// Builder for building and executing queries.
 pub struct QueryBuilder<T>
 where
     T: TableType + 'static,
@@ -54,6 +80,11 @@ impl<T> QueryBuilder<T>
 where
     T: TableType,
 {
+    /// Creates a new query builder for the given table.
+    ///
+    /// # Arguments
+    ///
+    /// * `table` - The table to build the query for.
     pub fn new(table: &Table<T>) -> Self {
         Self {
             table: table.clone(),
@@ -61,11 +92,18 @@ where
         }
     }
 
+    /// Adds a query condition to the query builder.
+    /// This will overwrite the previous condition (if set).
+    ///
+    /// # Arguments
+    ///
+    /// * `condition` - The condition to add to the query builder.
     pub fn with_condition<C: Into<QueryCondition<T>>>(mut self, condition: C) -> Self {
         self.condition = Some(condition.into());
         self
     }
 
+    /// Validates the query builder's state.
     fn check_valid(&self) -> DbResult<()> {
         match &self.condition {
             Some(_) => Ok(()),
@@ -75,11 +113,25 @@ where
         }
     }
 
+    /// Executes the query and returns the selected records.
+    ///
+    /// # Returns
+    ///
+    /// All selected [`Record`] instances.
     pub fn select(self) -> DbResult<Vec<Record<T>>> {
         self.check_valid()?;
         Self::select_recursive(self.condition.unwrap())
     }
 
+    /// Updates the records in the table based on the query condition and new value.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The new value to set for the updated records.
+    ///
+    /// # Returns
+    ///
+    /// All updated [`Record`] instances.
     pub fn update(self, value: T) -> DbResult<Vec<Record<T>>> {
         self.check_valid()?;
         let ids: Vec<u64> = Self::select_recursive(self.condition.unwrap())?
@@ -90,6 +142,11 @@ where
         self.table.update(&ids, value)
     }
 
+    /// Deletes the records from the table based on the query condition.
+    ///
+    /// # Returns
+    ///
+    /// All deleted [`Record`] instances.
     pub fn delete(self) -> DbResult<Vec<Record<T>>> {
         self.check_valid()?;
         let selected = Self::select_recursive(self.condition.unwrap())?;
@@ -105,6 +162,7 @@ where
         Ok(removed)
     }
 
+    /// Recursively processes the query conditions and returns the selected records.
     fn select_recursive(condition: QueryCondition<T>) -> DbResult<Vec<Record<T>>> {
         match condition {
             QueryCondition::By(index, value) => index.search(value),

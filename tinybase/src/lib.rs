@@ -5,9 +5,6 @@ use sled::Config;
 pub mod index;
 pub use index::Index;
 
-pub mod operation;
-pub use operation::Operation;
-
 pub mod query_builder;
 pub use query_builder::{ConditionBuilder, QueryBuilder};
 
@@ -33,14 +30,12 @@ pub struct TinyBase {
 }
 
 impl TinyBase {
-    /// Creates a new `TinyBase` instance.
+    /// Create a new instance of `TinyBase`.
     ///
     /// # Arguments
     ///
-    /// * `path` - An optional path to the database. If not provided, an
-    ///   in-memory database will be used.
-    /// * `temporary` - If true, the database will be removed when the
-    ///   `TinyBase` instance is dropped.
+    /// * `path` - An optional path to the database file. If `None`, an in-memory database is created.
+    /// * `temporary` - If `true`, the database file will be deleted on close.
     pub fn new(path: Option<&str>, temporary: bool) -> Self {
         Self {
             engine: if let Some(path) = path {
@@ -53,20 +48,15 @@ impl TinyBase {
         }
     }
 
-    /// Opens a table with the specified name.
+    /// Open a table for a given type.
     ///
     /// # Arguments
     ///
-    /// * `name` - The name of the table to open.
+    /// * `name` - The name of the table.
     ///
-    /// # Type Parameters
+    /// # Returns
     ///
-    /// * `T` - The type of the value to be stored in the table. Must implement
-    ///   `Serialize`, `Deserialize`, and `Debug`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the table could not be opened.
+    /// A `Table` instance for the given type.
     pub fn open_table<T: TableType>(&self, name: &str) -> DbResult<Table<T>> {
         Ok(Table(Arc::new(TableInner::new(&self.engine, name)?)))
     }

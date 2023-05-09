@@ -20,6 +20,7 @@ pub(crate) type SenderMap<T> = Arc<RwLock<HashMap<u64, Sender<T>>>>;
 pub trait TableType: Serialize + DeserializeOwned + Clone + Debug {}
 impl<T: Serialize + DeserializeOwned + Debug + Clone> TableType for T {}
 
+/// Provides methods for interacting with a typed table.
 pub struct Table<T: TableType + 'static>(pub(crate) Arc<TableInner<T>>);
 
 impl<T: TableType> Clone for Table<T> {
@@ -36,14 +37,6 @@ impl<T: TableType> Deref for Table<T> {
     }
 }
 
-/// Represents a table in the database.
-///
-/// [`Table`] provides methods for interacting with a table in the database, such as inserting records
-/// and creating indexes.
-///
-/// # Type Parameters
-///
-/// * `T` - The type of the value to be stored in the table.
 pub struct TableInner<T>
 where
     T: TableType + 'static,
@@ -66,12 +59,8 @@ where
     ///
     /// # Arguments
     ///
-    /// * `engine` - A reference to the `Db` engine.
+    /// * `engine` - The database engine.
     /// * `name` - The name of the table.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the table could not be created.
     pub(crate) fn new(engine: &Db, name: &str) -> DbResult<Self> {
         let root = engine.open_tree(name)?;
 
@@ -84,19 +73,15 @@ where
         })
     }
 
-    /// Inserts a new record into the table.
-    ///
-    /// This method generates a new ID for the record and serializes it, along with the value, before
-    /// inserting them into the table. Returns a [`DbResult`] containing the ID if the insert
-    /// is successful or an error if it fails.
+    /// Insert a new record into the table.
     ///
     /// # Arguments
     ///
-    /// * `value` - The value to be inserted into the table.
+    /// * `value` - The value to insert.
     ///
-    /// # Errors
+    /// # Returns
     ///
-    /// Returns an error if the record could not be inserted.
+    /// The ID of the new record.
     pub fn insert(&self, value: T) -> DbResult<u64> {
         let record = Record {
             id: self.engine.generate_id()?,
@@ -128,6 +113,15 @@ where
         Ok(record.id)
     }
 
+    /// Select a record by its ID.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The ID of the record to select.
+    ///
+    /// # Returns
+    ///
+    /// An [`Option`] containing the selected record if it exists, or [`None`] otherwise.
     pub fn select(&self, id: u64) -> DbResult<Option<Record<T>>> {
         if let Some(serialized) = self.root.get(encode(&id)?)? {
             Ok(Some(Record {
@@ -139,6 +133,15 @@ where
         }
     }
 
+    /// Delete a record by its ID.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The ID of the record to delete.
+    ///
+    /// # Returns
+    ///
+    /// An [`Option`] containing the deleted record if it exists, or [`None`] otherwise.
     pub fn delete(&self, id: u64) -> DbResult<Option<Record<T>>> {
         let serialized_id = encode(&id)?;
         if let Some(serialized) = self.root.remove(serialized_id)? {
@@ -155,6 +158,16 @@ where
         }
     }
 
+    /// Update one or more records by their IDs.
+    ///
+    /// # Arguments
+    ///
+    /// * `ids` - The IDs of the records to update.
+    /// * `value` - The new value to set for the updated records.
+    ///
+    /// # Returns
+    ///
+    /// A [`Vec`] containing the updated records.
     pub fn update(&self, ids: &[u64], value: T) -> DbResult<Vec<Record<T>>> {
         let serialized_value = encode(&value)?;
 
@@ -184,25 +197,16 @@ where
         Ok(updated)
     }
 
-    /// Creates a new index for the table.
-    ///
-    /// This method takes a name for the index and a function that defines how to construct the index key
-    /// from a record in the table. It returns a [`DbResult`] containing the new [`Index`] if successful
-    /// or an error if it fails.
+    /// Create an index on the table.
     ///
     /// # Arguments
     ///
     /// * `name` - The name of the index.
-    /// * `key_func` - A function that takes a reference to a record of type `T` and generates the index key
-    ///   for each record in the table.
+    /// * `key_func` - A function which computes the index key for each record.
     ///
-    /// # Type Parameters
+    /// # Returns
     ///
-    /// * `I` - The type of the index key.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the index could not be created.
+    /// An [`Index`] instance for the created index.
     pub fn create_index<I: IndexType>(
         &self,
         name: &str,
@@ -223,6 +227,11 @@ where
         )?)))
     }
 
+    /// Add a constraint to the table.
+    ///
+    /// # Arguments
+    ///
+    /// * `constraint` - The constraint to add.
     pub fn constraint(&self, constraint: Constraint<T>) -> DbResult<()> {
         let mut constraint_map = self.constraints.write().unwrap();
 
@@ -251,6 +260,7 @@ where
         Ok(())
     }
 
+    /// Dispatch event to all receivers.
     fn dispatch_event(&self, event: Event<T>) {
         for sender in self.senders.read().unwrap().values() {
             sender.send(event.clone()).unwrap();
