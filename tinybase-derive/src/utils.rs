@@ -18,22 +18,25 @@ pub fn has_attribute(attrs: &Vec<Attribute>, attr_name: &str) -> Option<(Ident, 
 }
 
 /// Get a value in an attribute.
-pub fn get_list_attr(attrs: &Vec<Attribute>, attr_name: &str) -> Vec<TokenStream> {
+pub fn get_list_attr(
+    attrs: &Vec<Attribute>,
+    attr_name: &str,
+) -> Result<Vec<TokenStream>, TokenStream> {
     let mut matches = vec![];
 
     for attr in attrs {
-        let meta = attr.parse_meta().unwrap();
+        let meta = attr.parse_meta().map_err(|err| err.to_compile_error())?;
         if let syn::Meta::List(path) = meta {
             if let Some(ident) = path.path.get_ident() {
                 if ident == attr_name {
-                    let tokens = attr.parse_args().unwrap();
+                    let tokens = attr.parse_args().map_err(|err| err.to_compile_error())?;
                     matches.push(tokens);
                 }
             }
         }
     }
 
-    matches
+    Ok(matches)
 }
 
 /// Make sure the state of attributes is allowed.
@@ -54,10 +57,10 @@ pub fn validate_attributes(
         }
     }
 
-    if let Some(base) = base {
-        for attr in other {
-            let found = has_attribute(attrs, attr.0);
-            if let Some(found) = found {
+    for attr in other {
+        let found = has_attribute(attrs, attr.0);
+        if let Some(found) = found {
+            if let Some(base) = base {
                 if !has_attribute(attrs, base).is_some() {
                     return Err(syn::Error::new(
                         found.0.span(),
@@ -66,8 +69,20 @@ pub fn validate_attributes(
                     .to_compile_error()
                     .into());
                 }
+            }
 
-                if let Meta::List(_) = found.1 {
+            match found.1 {
+                Meta::Path(_) => {
+                    if attr.1 {
+                        return Err(syn::Error::new(
+                            found.0.span(),
+                            "This attribute is missing a parameter",
+                        )
+                        .to_compile_error()
+                        .into());
+                    }
+                }
+                Meta::List(_) => {
                     if !attr.1 {
                         return Err(
                             syn::Error::new(found.0.span(), "This attribute isn't a list")
@@ -76,7 +91,8 @@ pub fn validate_attributes(
                         );
                     }
                 }
-            }
+                _ => unimplemented!(),
+            };
         }
     }
 

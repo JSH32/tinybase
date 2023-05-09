@@ -25,18 +25,23 @@ pub fn repository(input: TokenStream) -> TokenStream {
             Err(e) => return e,
         };
 
-    if let Err(tokens) = validate_attributes(&ast.attrs, None, &[], &["unique", "index"]) {
+    if let Err(tokens) =
+        validate_attributes(&ast.attrs, None, &[("check", true)], &["unique", "index"])
+    {
         return tokens.into();
     }
 
-    let checks: Vec<proc_macro2::TokenStream> = get_list_attr(&ast.attrs, "check")
-        .iter()
-        .map(|check_fn| {
-            return quote! {
-                _table.constraint(tinybase::Constraint::check(#check_fn))?;
-            };
-        })
-        .collect();
+    let checks: Vec<proc_macro2::TokenStream> = match get_list_attr(&ast.attrs, "check") {
+        Ok(v) => v,
+        Err(err) => return err.into(),
+    }
+    .iter()
+    .map(|check_fn| {
+        return quote! {
+            _table.constraint(tinybase::Constraint::check(#check_fn))?;
+        };
+    })
+    .collect();
 
     let vis = ast.vis.clone();
     let wrapper_name = syn::Ident::new(&format!("{}Repository", name.to_string()), name.span());
