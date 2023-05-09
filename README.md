@@ -70,4 +70,4 @@ fn main() {
 
 This example demonstrates how to create a new TinyBase instance, open a table (or create one if it doesn't exist), add indexes and constraints, and perform basic operations (insert/select).
 
-You can view more examples in [examples](https://github.com/JSH32/tinybase/tree/master/examples)
+You can view more examples in [examples](https://github.com/JSH32/tinybase/tree/master/tinybase/examples)
