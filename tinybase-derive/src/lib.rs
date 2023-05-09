@@ -4,9 +4,9 @@ use core::panic;
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, Data, DeriveInput, Field, Fields, FieldsNamed, Ident};
-use utils::{has_attribute, validate_attributes};
+use utils::{get_list_attr, has_attribute, validate_attributes};
 
-#[proc_macro_derive(Repository, attributes(index, unique))]
+#[proc_macro_derive(Repository, attributes(index, unique, check))]
 pub fn repository(input: TokenStream) -> TokenStream {
     let ast = parse_macro_input!(input as DeriveInput);
     let name = ast.ident;
@@ -24,6 +24,19 @@ pub fn repository(input: TokenStream) -> TokenStream {
             Ok(v) => v,
             Err(e) => return e,
         };
+
+    if let Err(tokens) = validate_attributes(&ast.attrs, None, &[], &["unique", "index"]) {
+        return tokens.into();
+    }
+
+    let checks: Vec<proc_macro2::TokenStream> = get_list_attr(&ast.attrs, "check")
+        .iter()
+        .map(|check_fn| {
+            return quote! {
+                _table.constraint(tinybase::Constraint::check(#check_fn))?;
+            };
+        })
+        .collect();
 
     let vis = ast.vis.clone();
     let wrapper_name = syn::Ident::new(&format!("{}Repository", name.to_string()), name.span());
@@ -51,6 +64,7 @@ pub fn repository(input: TokenStream) -> TokenStream {
             pub fn init(db: &tinybase::TinyBase, name: &str) -> tinybase::DbResult<#wrapper_name> {
                 let _table: tinybase::Table<#name> = db.open_table(name)?;
                 #(#index_initializers);*
+                #(#checks)*
 
                 Ok(#wrapper_name {
                     _table, #(#index_names),*
@@ -82,16 +96,14 @@ fn process_fields<'a>(
     let mut index_initializers = vec![];
 
     for field in fields {
-        if let Some(ident) = validate_attributes(field, "index", &["unique"]) {
-            return Err(syn::Error::new(
-                ident.span(),
-                "This attribute requires the #[index] attribute",
-            )
-            .to_compile_error()
-            .into());
-        }
+        validate_attributes(
+            &field.attrs,
+            Some("index"),
+            &[("unique", false), ("index", false)], // index is here as a hack to prevent allowing list.
+            &["check"],
+        )?;
 
-        if has_attribute(field, "index").is_some() {
+        if has_attribute(&field.attrs, "index").is_some() {
             let (field_name, type_name) = (field.ident.as_ref().unwrap(), &field.ty);
 
             index_names.push(field_name.clone());
@@ -110,7 +122,7 @@ fn process_fields<'a>(
                 let #field_name = _table.create_index(#field_str, |record| record.#field_name.clone())?;
             });
 
-            if has_attribute(field, "unique").is_some() {
+            if has_attribute(&field.attrs, "unique").is_some() {
                 index_initializers.push(quote! {
                     _table.constraint(tinybase::Constraint::unique(&#field_name))?;
                 })
