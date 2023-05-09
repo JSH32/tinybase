@@ -5,7 +5,7 @@ use std::vec;
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use sled::{Db, IVec, Tree};
+use sled::{Db, Tree};
 
 use crate::encoding::{decode, encode};
 use crate::record::Record;
@@ -68,8 +68,6 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
         key_func: impl Fn(&T) -> I + Send + Sync + 'static,
         subscriber: Subscriber<T>,
     ) -> DbResult<Self> {
-        let need_sync = !engine.tree_names().contains(&IVec::from(idx_name));
-
         let new_index = Self {
             table_data: table_data.clone(),
             key_func: Box::new(key_func),
@@ -77,10 +75,7 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
             subscriber,
         };
 
-        // Index is new, sync data
-        if need_sync {
-            new_index.sync()?;
-        }
+        new_index.sync()?;
 
         Ok(new_index)
     }
