@@ -272,7 +272,7 @@ dependencies = [
 
 [[package]]
 name = "tinybase"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "bincode",
  "serde",
@@ -283,7 +283,7 @@ dependencies = [
 
 [[package]]
 name = "tinybase-derive"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "proc-macro2",
  "quote",

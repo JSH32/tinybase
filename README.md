@@ -19,7 +19,7 @@ TinyBase is an in-memory database built with Rust, based on the [sled](https://g
 To use TinyBase in your Rust project, add the following line to your Cargo.toml file's `[dependencies]` section.:
 
 ```toml
-tinybase = { version = "0.1.4", features = ["derive"] }
+tinybase = { version = "0.1.5", features = ["derive"] }
 ```
 
 ## Usage Example

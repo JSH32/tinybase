@@ -157,8 +157,9 @@ fn create_methods(
             self.#field_name.delete(&#field_name)
         }
 
-        pub fn #update_method(&self, #field_name: #type_name, value: #name) -> tinybase::result::DbResult<Vec<tinybase::Record<#name>>> {
-            self.#field_name.update(&#field_name, value)
+        pub fn #update_method(&self, #field_name: #type_name, updater: fn(#name) -> #name) -> tinybase::result::DbResult<Vec<tinybase::Record<#name>>> {
+            let records: Vec<u64> = self.#field_name.select(&#field_name)?.iter().map(|r| r.id).collect();
+            self._table.update(&records, updater)
         }
     }
 }

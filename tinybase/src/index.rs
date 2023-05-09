@@ -223,38 +223,6 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
         )
     }
 
-    /// Update records in the table and the index based on the given query and new value.
-    ///
-    /// # Arguments
-    ///
-    /// * `query` - A reference to the query key.
-    /// * `value` - The new value to set for the updated records.
-    ///
-    /// # Returns
-    ///
-    /// All updated [`Record`] instances.
-    pub fn update(&self, query: &I, value: T) -> DbResult<Vec<Record<T>>> {
-        self.commit_log()?;
-
-        let mut new_data = vec![];
-
-        if let Ok(Some(bytes)) = self.indexed_data.get(encode(&query)?) {
-            let ids: Vec<u64> = decode(&bytes)?;
-            let new_value = encode(&value)?;
-
-            for id in ids {
-                self.table_data.insert(encode(&id)?, new_value.clone())?;
-
-                new_data.push(Record {
-                    id,
-                    data: value.clone(),
-                })
-            }
-        }
-
-        Ok(new_data)
-    }
-
     /// Check if a record matches the built index key.
     pub fn exists_record(&self, record: &Record<T>) -> DbResult<Vec<u64>> {
         self.exists((self.key_func)(&record.data))
@@ -366,30 +334,6 @@ mod tests {
             .expect("Select failed");
 
         assert_eq!(record_2.len(), 0);
-    }
-
-    #[test]
-    fn index_update() {
-        let db = TinyBase::new(None, true);
-        let table: Table<String> = db.open_table("test_table").unwrap();
-
-        // Create an index for the table
-        let index: Index<String, String> = table
-            .create_index("index_name", |value| value.to_owned())
-            .unwrap();
-
-        // Insert string values into the table
-        let id1 = table.insert("initial_value_1".to_string()).unwrap();
-        table.insert("initial_value_2".to_string()).unwrap();
-
-        // Update records with matching key
-        let updated_records = index
-            .update(&"initial_value_1".to_string(), "updated_value".to_string())
-            .expect("Update failed");
-
-        assert_eq!(updated_records.len(), 1);
-        assert_eq!(updated_records[0].id, id1);
-        assert_eq!(updated_records[0].data, "updated_value");
     }
 
     #[test]
