@@ -76,7 +76,8 @@ where
     T: TableType + 'static,
 {
     pub(crate) engine: Db,
-    pub(crate) root: Tree,
+    /// This has a global lock to make sure that constraints are honored during inserts.
+    pub(crate) root: RwLock<Tree>,
     name: String,
     senders: SenderMap<Event<T>>,
     constraints: RwLock<Vec<Constraint<T>>>,
@@ -96,7 +97,7 @@ where
     /// * `engine` - The database engine.
     /// * `name` - The name of the table.
     pub(crate) fn new(engine: &Db, name: &str) -> DbResult<Self> {
-        let root = engine.open_tree(name)?;
+        let root = RwLock::new(engine.open_tree(name)?);
 
         Ok(Self {
             engine: engine.clone(),
@@ -117,14 +118,16 @@ where
     ///
     /// The ID of the new record.
     pub fn insert(&self, value: T) -> DbResult<u64> {
+        let root = self.root.write().unwrap();
+
         let record = Record {
             id: self.engine.generate_id()?,
             data: value.clone(),
         };
 
-        self.check_constraint(&record, &vec![])?;
+        self.check_constraint(&root, &record, &vec![])?;
+        root.insert(encode(&record.id)?, encode(&value)?)?;
 
-        self.root.insert(encode(&record.id)?, encode(&value)?)?;
         self.dispatch_event(Event::Insert(record.clone()));
 
         Ok(record.id)
@@ -132,11 +135,17 @@ where
 
     /// Check if constraint is met.
     /// Additional items can be specified if there are some items that aren't inserted yet.
-    fn check_constraint(&self, record: &Record<T>, additional_items: &Vec<T>) -> DbResult<()> {
+    /// Any time you pass the tree it should probably be obtained via a write lock.
+    fn check_constraint(
+        &self,
+        tree: &Tree,
+        record: &Record<T>,
+        additional_items: &Vec<T>,
+    ) -> DbResult<()> {
         for constraint in self.constraints.read().unwrap().iter() {
             match &constraint.0 {
                 ConstraintInner::Unique(index) => {
-                    let matches = index.record_exists(record)?;
+                    let matches = index.tree_exists(tree, record)?;
                     // Check if record being changed is the same record that has the index error.
                     if matches.len() > 1 || matches.len() == 1 && matches[0] != record.id {
                         return Err(crate::result::TinyBaseError::Exists {
@@ -176,7 +185,12 @@ where
     ///
     /// An [`Option`] containing the selected record if it exists, or [`None`] otherwise.
     pub fn select(&self, id: u64) -> DbResult<Option<Record<T>>> {
-        if let Some(serialized) = self.root.get(encode(&id)?)? {
+        self.tree_select(&self.root.read().unwrap(), id)
+    }
+
+    /// Select that doesn't obtain a read lock.
+    pub(crate) fn tree_select(&self, tree: &Tree, id: u64) -> DbResult<Option<Record<T>>> {
+        if let Some(serialized) = tree.get(encode(&id)?)? {
             Ok(Some(Record {
                 id,
                 data: decode(&serialized)?,
@@ -197,7 +211,9 @@ where
     /// An [`Option`] containing the deleted record if it exists, or [`None`] otherwise.
     pub fn delete(&self, id: u64) -> DbResult<Option<Record<T>>> {
         let serialized_id = encode(&id)?;
-        if let Some(serialized) = self.root.remove(serialized_id)? {
+
+        // We don't need to lock table even though we write because deleting will never invalidate unique constraint.
+        if let Some(serialized) = self.root.read().unwrap().remove(serialized_id)? {
             let record = Record {
                 id,
                 data: decode(&serialized)?,
@@ -222,9 +238,11 @@ where
     ///
     /// All updated records.
     pub fn update(&self, ids: &[u64], updater: fn(T) -> T) -> DbResult<Vec<Record<T>>> {
+        let root = self.root.write().unwrap();
+
         let mut records = vec![];
         for id in ids {
-            if let Some(old) = self.select(*id)? {
+            if let Some(old) = self.tree_select(&root, *id)? {
                 records.push(Record {
                     id: old.id,
                     data: updater(old.data),
@@ -234,27 +252,26 @@ where
 
         let additional: Vec<T> = records.iter().map(|r| r.data.clone()).collect();
         for record in &records {
-            self.check_constraint(record, &additional)?;
+            self.check_constraint(&root, record, &additional)?;
         }
 
         let mut updated = vec![];
         for record in records {
-            self.root
-                .update_and_fetch(encode(&record.id)?, |old_value| {
-                    if let Some(old_value) = old_value {
-                        updated.push(record.clone());
+            root.update_and_fetch(encode(&record.id)?, |old_value| {
+                if let Some(old_value) = old_value {
+                    updated.push(record.clone());
 
-                        self.dispatch_event(Event::Update {
-                            id: record.id.clone(),
-                            old_data: decode(old_value).unwrap(),
-                            new_data: record.data.clone(),
-                        });
+                    self.dispatch_event(Event::Update {
+                        id: record.id.clone(),
+                        old_data: decode(old_value).unwrap(),
+                        new_data: record.data.clone(),
+                    });
 
-                        Some(encode(&record.data).unwrap())
-                    } else {
-                        None
-                    }
-                })?;
+                    Some(encode(&record.data).unwrap())
+                } else {
+                    None
+                }
+            })?;
         }
 
         Ok(updated)

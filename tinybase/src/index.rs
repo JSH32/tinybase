@@ -13,6 +13,8 @@ use crate::result::DbResult;
 use crate::subscriber::{self, Subscriber};
 use crate::table::{TableInner, TableType};
 
+use self::private::AnyIndexInternal;
+
 pub trait IndexType: Serialize + DeserializeOwned {}
 impl<T: Serialize + DeserializeOwned> IndexType for T {}
 
@@ -85,9 +87,10 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
         self.indexed_data.clear()?;
 
         let table = self.table.upgrade().unwrap();
-        for key in table.root.iter().keys() {
+        let root = table.root.write().unwrap();
+        for key in root.iter().keys() {
             // This should always succeed
-            if let Some(data) = table.root.get(&key.clone()?)? {
+            if let Some(data) = root.get(&key.clone()?)? {
                 self.insert(&Record {
                     id: decode(&key?)?,
                     data: decode(&data)?,
@@ -219,6 +222,30 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
         )
     }
 
+    /// Static select that doesn't obtain a read lock.
+    fn tree_select(&self, tree: &Tree, query: &I) -> DbResult<Vec<Record<T>>> {
+        self.commit_log()?;
+
+        let table = self.table.upgrade().unwrap();
+
+        Ok(
+            if let Ok(Some(bytes)) = self.indexed_data.get(encode(&query)?) {
+                let ids: Vec<u64> = decode(&bytes)?;
+
+                let mut results = vec![];
+                for id in ids {
+                    if let Some(record) = table.tree_select(tree, id)? {
+                        results.push(record);
+                    }
+                }
+
+                results
+            } else {
+                Vec::new()
+            },
+        )
+    }
+
     /// Update records in the table and the index based on the given query and new value.
     ///
     /// # Arguments
@@ -242,20 +269,6 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
         }
     }
 
-    /// Check if a record matches the built index key.
-    pub fn exists_record(&self, record: &Record<T>) -> DbResult<Vec<u64>> {
-        self.exists((self.key_func)(&record.data))
-    }
-
-    /// Check if a record exists by the index key.
-    ///
-    /// # Arguments
-    ///
-    /// * `key` - The index key to check for existence.
-    pub fn exists(&self, key: I) -> DbResult<Vec<u64>> {
-        Ok(self.select(&key)?.iter().map(|record| record.id).collect())
-    }
-
     pub fn index_name(&self) -> String {
         std::str::from_utf8(&self.indexed_data.name())
             .unwrap()
@@ -267,10 +280,39 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
     }
 }
 
+pub(crate) mod private {
+    use super::*;
+
+    /// Additional methods for index which are only for internal use.
+    pub trait AnyIndexInternal<T: TableType> {
+        fn tree_exists(&self, tree: &Tree, record: &Record<T>) -> DbResult<Vec<u64>>;
+    }
+}
+
+impl<T, I> private::AnyIndexInternal<T> for Index<T, I>
+where
+    T: TableType,
+    I: IndexType + 'static,
+{
+    fn tree_exists(&self, tree: &Tree, record: &Record<T>) -> DbResult<Vec<u64>> {
+        let i = (self.key_func)(&record.data);
+
+        Ok(self
+            .tree_select(tree, &i)?
+            .iter()
+            .map(|record: &Record<T>| record.id)
+            .collect())
+    }
+}
+
 /// Type which [`Index`] can be casted to which doesn't require the `I` type parameter.
-pub trait AnyIndex<T: TableType> {
-    /// Alias for `exists_record`.
-    fn record_exists(&self, record: &Record<T>) -> DbResult<Vec<u64>>;
+pub trait AnyIndex<T: TableType>: private::AnyIndexInternal<T> {
+    /// Check if a record exists by the index key.
+    ///
+    /// # Arguments
+    ///
+    /// * `record` - The record to check for existence.
+    fn exists(&self, record: &Record<T>) -> DbResult<Vec<u64>>;
     /// Select which allows any type.
     fn search(&self, value: Box<dyn Any>) -> DbResult<Vec<Record<T>>>;
     /// Alias for `index_name`.
@@ -293,8 +335,8 @@ where
         self.index_name()
     }
 
-    fn record_exists(&self, record: &Record<T>) -> DbResult<Vec<u64>> {
-        self.exists_record(record)
+    fn exists(&self, record: &Record<T>) -> DbResult<Vec<u64>> {
+        self.tree_exists(&self.table.upgrade().unwrap().root.read().unwrap(), record)
     }
 
     fn gen_key(&self, data: &T) -> DbResult<Vec<u8>> {
@@ -400,7 +442,7 @@ mod tests {
         };
 
         assert!(!index
-            .exists_record(&record)
+            .exists(&record)
             .expect("Exists check failed")
             .is_empty());
 
@@ -410,7 +452,7 @@ mod tests {
         };
 
         assert!(index
-            .exists_record(&record_not_exist)
+            .exists(&record_not_exist)
             .expect("Exists check failed")
             .is_empty());
     }
