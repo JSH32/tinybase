@@ -85,13 +85,9 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
         self.indexed_data.clear()?;
 
         let table = self.table.upgrade().unwrap();
-
-        // Lock while syncing so new inserts/events can't happen.
-        let writer = table.root.read().unwrap();
-
-        for key in writer.iter().keys() {
+        for key in table.root.iter().keys() {
             // This should always succeed
-            if let Some(data) = writer.get(&key.clone()?)? {
+            if let Some(data) = table.root.get(&key.clone()?)? {
                 self.insert(&Record {
                     id: decode(&key?)?,
                     data: decode(&data)?,
