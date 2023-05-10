@@ -52,7 +52,7 @@ fn main() {
     );
 
     println!(
-        "Replaced name of John OR lastname Jones with Kevin Spacey:\n{:#?}",
+        "Replaced lastnames with Brown:\n{:#?}",
         QueryBuilder::new(&people)
             .with_condition(ConditionBuilder::or(
                 ConditionBuilder::by(&people.name, "John".to_string()),

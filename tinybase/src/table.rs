@@ -23,6 +23,40 @@ impl<T: Serialize + DeserializeOwned + Debug + Clone> TableType for T {}
 /// Provides methods for interacting with a typed table.
 pub struct Table<T: TableType + 'static>(pub(crate) Arc<TableInner<T>>);
 
+impl<T: TableType + 'static> Table<T> {
+    /// Create an index on the table.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The name of the index.
+    /// * `key_func` - A function which computes the index key for each record.
+    ///
+    /// # Returns
+    ///
+    /// An [`Index`] instance for the created index.
+    pub fn create_index<I: IndexType>(
+        &self,
+        name: &str,
+        key_func: impl Fn(&T) -> I + Send + Sync + 'static,
+    ) -> DbResult<Index<T, I>> {
+        let sender_id = self.engine.generate_id()?;
+        let (tx, rx) = mpsc::channel();
+
+        let subscriber = Subscriber::new(sender_id, rx, self.senders.clone());
+        self.senders.write().unwrap().insert(sender_id, tx);
+
+        let weak_self = Arc::downgrade(&self.0);
+
+        Ok(Index(Arc::new(IndexInner::new(
+            &format!("{}_idx_{}", self.name, name),
+            &self.engine,
+            weak_self,
+            key_func,
+            subscriber,
+        )?)))
+    }
+}
+
 impl<T: TableType> Clone for Table<T> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
@@ -42,7 +76,10 @@ where
     T: TableType + 'static,
 {
     pub(crate) engine: Db,
-    root: Tree,
+    /// Despite the fact that [`Tree`] has its own locking mechanism.
+    /// We do this so that we can lock the entire table when doing transactions.
+    /// TODO: Implement optimistic concurrency control (OCC).
+    pub(crate) root: RwLock<Tree>,
     name: String,
     senders: SenderMap<Event<T>>,
     constraints: RwLock<Vec<Constraint<T>>>,
@@ -62,7 +99,7 @@ where
     /// * `engine` - The database engine.
     /// * `name` - The name of the table.
     pub(crate) fn new(engine: &Db, name: &str) -> DbResult<Self> {
-        let root = engine.open_tree(name)?;
+        let root = RwLock::new(engine.open_tree(name)?);
 
         Ok(Self {
             engine: engine.clone(),
@@ -88,9 +125,11 @@ where
             data: value.clone(),
         };
 
-        self.check_constraint(&record, &vec![])?;
+        let root = self.root.read().unwrap();
 
-        self.root.insert(encode(&record.id)?, encode(&value)?)?;
+        self.check_constraint(&record, &vec![])?;
+        root.insert(encode(&record.id)?, encode(&value)?)?;
+
         self.dispatch_event(Event::Insert(record.clone()));
 
         Ok(record.id)
@@ -142,7 +181,7 @@ where
     ///
     /// An [`Option`] containing the selected record if it exists, or [`None`] otherwise.
     pub fn select(&self, id: u64) -> DbResult<Option<Record<T>>> {
-        if let Some(serialized) = self.root.get(encode(&id)?)? {
+        if let Some(serialized) = self.root.read().unwrap().get(encode(&id)?)? {
             Ok(Some(Record {
                 id,
                 data: decode(&serialized)?,
@@ -163,7 +202,7 @@ where
     /// An [`Option`] containing the deleted record if it exists, or [`None`] otherwise.
     pub fn delete(&self, id: u64) -> DbResult<Option<Record<T>>> {
         let serialized_id = encode(&id)?;
-        if let Some(serialized) = self.root.remove(serialized_id)? {
+        if let Some(serialized) = self.root.read().unwrap().remove(serialized_id)? {
             let record = Record {
                 id,
                 data: decode(&serialized)?,
@@ -188,6 +227,7 @@ where
     ///
     /// All updated records.
     pub fn update(&self, ids: &[u64], updater: fn(T) -> T) -> DbResult<Vec<Record<T>>> {
+        // Treat updates like transactions since it accepts multiple IDs.
         let mut records = vec![];
         for id in ids {
             if let Some(old) = self.select(*id)? {
@@ -198,6 +238,8 @@ where
             }
         }
 
+        let root = self.root.write().unwrap();
+
         let additional: Vec<T> = records.iter().map(|r| r.data.clone()).collect();
         for record in &records {
             self.check_constraint(record, &additional)?;
@@ -205,55 +247,24 @@ where
 
         let mut updated = vec![];
         for record in records {
-            self.root
-                .update_and_fetch(encode(&record.id)?, |old_value| {
-                    if let Some(old_value) = old_value {
-                        updated.push(record.clone());
+            root.update_and_fetch(encode(&record.id)?, |old_value| {
+                if let Some(old_value) = old_value {
+                    updated.push(record.clone());
 
-                        self.dispatch_event(Event::Update {
-                            id: record.id.clone(),
-                            old_data: decode(old_value).unwrap(),
-                            new_data: record.data.clone(),
-                        });
+                    self.dispatch_event(Event::Update {
+                        id: record.id.clone(),
+                        old_data: decode(old_value).unwrap(),
+                        new_data: record.data.clone(),
+                    });
 
-                        Some(encode(&record.data).unwrap())
-                    } else {
-                        None
-                    }
-                })?;
+                    Some(encode(&record.data).unwrap())
+                } else {
+                    None
+                }
+            })?;
         }
 
         Ok(updated)
-    }
-
-    /// Create an index on the table.
-    ///
-    /// # Arguments
-    ///
-    /// * `name` - The name of the index.
-    /// * `key_func` - A function which computes the index key for each record.
-    ///
-    /// # Returns
-    ///
-    /// An [`Index`] instance for the created index.
-    pub fn create_index<I: IndexType>(
-        &self,
-        name: &str,
-        key_func: impl Fn(&T) -> I + Send + Sync + 'static,
-    ) -> DbResult<Index<T, I>> {
-        let sender_id = self.engine.generate_id()?;
-        let (tx, rx) = mpsc::channel();
-
-        let subscriber = Subscriber::new(sender_id, rx, self.senders.clone());
-        self.senders.write().unwrap().insert(sender_id, tx);
-
-        Ok(Index(Arc::new(IndexInner::new(
-            &format!("{}_idx_{}", self.name, name),
-            &self.engine,
-            &self.root,
-            key_func,
-            subscriber,
-        )?)))
     }
 
     /// Add a constraint to the table.

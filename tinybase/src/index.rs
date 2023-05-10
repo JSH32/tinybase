@@ -1,6 +1,6 @@
 use std::any::Any;
 use std::ops::Deref;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::vec;
 
 use serde::de::DeserializeOwned;
@@ -11,13 +11,13 @@ use crate::encoding::{decode, encode};
 use crate::record::Record;
 use crate::result::DbResult;
 use crate::subscriber::{self, Subscriber};
-use crate::table::TableType;
+use crate::table::{TableInner, TableType};
 
 pub trait IndexType: Serialize + DeserializeOwned {}
 impl<T: Serialize + DeserializeOwned> IndexType for T {}
 
 /// Provides methods for interacting with an index on a typed table.
-pub struct Index<T: TableType, I: IndexType>(pub(crate) Arc<IndexInner<T, I>>);
+pub struct Index<T: TableType + 'static, I: IndexType>(pub(crate) Arc<IndexInner<T, I>>);
 
 impl<T: TableType, I: IndexType> Clone for Index<T, I> {
     fn clone(&self) -> Self {
@@ -34,8 +34,8 @@ impl<T: TableType, I: IndexType> Deref for Index<T, I> {
 }
 
 /// Inner state of an index on a typed table.
-pub struct IndexInner<T: TableType, I: IndexType> {
-    table_data: Tree,
+pub struct IndexInner<T: TableType + 'static, I: IndexType> {
+    table: Weak<TableInner<T>>,
     /// Function which will be used to compute the key per insert.
     key_func: Box<dyn Fn(&T) -> I + Send + Sync>,
     /// Built index, each key can have multiple matching records.
@@ -54,7 +54,7 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
     ///
     /// * `idx_name` - The name of the index.
     /// * `engine` - The database engine.
-    /// * `table_data` - The data of the table to be indexed.
+    /// * `table` - A weak pointer to the table.
     /// * `key_func` - A function which computes the index key for each record.
     /// * `subscriber` - A subscriber to uncommitted operation log.
     ///
@@ -64,12 +64,12 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
     pub(crate) fn new(
         idx_name: &str,
         engine: &Db,
-        table_data: &Tree,
+        table: Weak<TableInner<T>>,
         key_func: impl Fn(&T) -> I + Send + Sync + 'static,
         subscriber: Subscriber<T>,
     ) -> DbResult<Self> {
         let new_index = Self {
-            table_data: table_data.clone(),
+            table,
             key_func: Box::new(key_func),
             indexed_data: engine.open_tree(idx_name)?,
             subscriber,
@@ -83,9 +83,15 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
     /// Resync index to be up to date with table.
     pub fn sync(&self) -> DbResult<()> {
         self.indexed_data.clear()?;
-        for key in self.table_data.iter().keys() {
+
+        let table = self.table.upgrade().unwrap();
+
+        // Lock while syncing so new inserts/events can't happen.
+        let writer = table.root.read().unwrap();
+
+        for key in writer.iter().keys() {
             // This should always succeed
-            if let Some(data) = self.table_data.get(&key.clone()?)? {
+            if let Some(data) = writer.get(&key.clone()?)? {
                 self.insert(&Record {
                     id: decode(&key?)?,
                     data: decode(&data)?,
@@ -176,9 +182,10 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
     pub fn delete(&self, query: &I) -> DbResult<Vec<Record<T>>> {
         let records = self.select(query)?;
 
+        let table = self.table.upgrade().unwrap();
+
         for record in &records {
-            self.table_data.remove(&encode(&record.id)?)?;
-            self.remove(&record)?;
+            table.delete(record.id)?;
         }
 
         Ok(records)
@@ -196,18 +203,16 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
     pub fn select(&self, query: &I) -> DbResult<Vec<Record<T>>> {
         self.commit_log()?;
 
+        let table = self.table.upgrade().unwrap();
+
         Ok(
             if let Ok(Some(bytes)) = self.indexed_data.get(encode(&query)?) {
                 let ids: Vec<u64> = decode(&bytes)?;
 
                 let mut results = vec![];
                 for id in ids {
-                    let encoded_data = self.table_data.get(encode(&id)?)?;
-                    if let Some(encoded_data) = encoded_data {
-                        results.push(Record {
-                            id,
-                            data: decode::<T>(&encoded_data)?,
-                        })
+                    if let Some(record) = table.select(id)? {
+                        results.push(record);
                     }
                 }
 
@@ -216,6 +221,29 @@ impl<T: TableType, I: IndexType> IndexInner<T, I> {
                 Vec::new()
             },
         )
+    }
+
+    /// Update records in the table and the index based on the given query and new value.
+    ///
+    /// # Arguments
+    ///
+    /// * `query` - A reference to the query key.
+    /// * `updater` - Closure to generate the new data based on the old data.
+    ///
+    /// # Returns
+    ///
+    /// All updated [`Record`] instances.
+    pub fn update(&self, query: &I, updater: fn(T) -> T) -> DbResult<Vec<Record<T>>> {
+        self.commit_log()?;
+
+        let table = self.table.upgrade().unwrap();
+
+        if let Ok(Some(bytes)) = self.indexed_data.get(encode(&query)?) {
+            let ids: Vec<u64> = decode(&bytes)?;
+            table.update(&ids, updater)
+        } else {
+            Ok(vec![])
+        }
     }
 
     /// Check if a record matches the built index key.
@@ -329,6 +357,32 @@ mod tests {
             .expect("Select failed");
 
         assert_eq!(record_2.len(), 0);
+    }
+
+    #[test]
+    fn index_update() {
+        let db = TinyBase::new(None, true);
+        let table: Table<String> = db.open_table("test_table").unwrap();
+
+        // Create an index for the table
+        let index: Index<String, String> = table
+            .create_index("index_name", |value| value.to_owned())
+            .unwrap();
+
+        // Insert string values into the table
+        let id1 = table.insert("initial_value_1".to_string()).unwrap();
+        table.insert("initial_value_2".to_string()).unwrap();
+
+        // Update records with matching key
+        let updated_records = index
+            .update(&"initial_value_1".to_string(), |_| {
+                "updated_value".to_string()
+            })
+            .expect("Update failed");
+
+        assert_eq!(updated_records.len(), 1);
+        assert_eq!(updated_records[0].id, id1);
+        assert_eq!(updated_records[0].data, "updated_value");
     }
 
     #[test]
